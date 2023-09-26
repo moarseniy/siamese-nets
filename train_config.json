@@ -1,0 +1,12 @@
+{
+  "train_data_dir": "/home/arseniy/kor_exp/triplet_retrieve/",
+  "valid_data_dir": "/home/arseniy/kor_exp/phd08/",
+  "checkpoint_pt": "/home/arseniy/siamese_out/cc",
+  "images_pt" : "/home/arseniy/siamese_out/im",
+  "alph_pt": "/home/arseniy/factory/tmp_nn/kor_101_mfcr_torch/kor_101_mfcr.json",
+  "file_to_start": "",
+  "validate": false,
+  "ideals": "/home/arseniy/python_programs/exp_icmv/cc/25-09-2023-18-00/ideals_36.json",
+  "minibatch_size": 10240,
+  "epoch_num": 1000
+}
