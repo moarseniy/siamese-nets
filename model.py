@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from model_components import *
 from torchvision import transforms
 
 
@@ -53,71 +52,3 @@ class KorNet(torch.nn.Module):
         x = self.conv5(x)
         x = self.final(x.flatten(start_dim=1))
         return x
-
-    # def summary(self):
-    #     summary(self, [(1, 32, 200)])
-
-
-class UrduRecongizer(nn.Module):
-    def __init__(self, vocab_size, backbone, num_recurrent_units):
-        self.num_recurrent_units = num_recurrent_units
-        super(UrduRecongizer, self).__init__()
-        if backbone == "MultiscaleCNN":
-            self.backbone = MultiscaleCNN()
-        elif backbone == "OnescaleCNN":
-            self.backbone = OnescaleCNN()
-        elif backbone == "OnescaleCNN_NOBN":
-            self.backbone = OnescaleCNN_NOBN()
-        elif backbone == "UNet":
-            self.backbone = UNet(1)
-        elif backbone == "DebugModel":
-            self.backbone = DebugModel()
-        else:
-            print("Backbone not valid")
-            exit(-1)
-
-        self.attention = AttentionDecoder(num_recurrent_units,
-                                          256, 256,
-                                          vocab_size)
-        print("Initialized Recognizer with alph_size", vocab_size)
-
-    def forward(self, inputs, save_dir, epoch):
-        emb = self.backbone(inputs, save_dir, epoch)
-        ans, att_w = self.attention(emb, save_dir)
-        # return torch.nn.LogSoftmax(dim=1)(ans), att_w
-        return ans, att_w
-
-    def summary(self):
-        summary(self, [(1, 32, 200)])
-
-
-class UrduRecongizerDebug(nn.Module):
-    def __init__(self, vocab_size, backbone, num_recurrent_units):
-        self.num_recurrent_units = num_recurrent_units
-        super(UrduRecongizerDebug, self).__init__()
-        if backbone == "MultiscaleCNN":
-            self.backbone = MultiscaleCNN()
-        elif backbone == "OnescaleCNN":
-            self.backbone = OnescaleCNN()
-        elif backbone == "OnescaleCNN_NOBN":
-            self.backbone = OnescaleCNN_NOBN()
-        elif backbone == "UNet":
-            self.backbone = UNet(1)
-        elif backbone == "DebugModel":
-            self.backbone = DebugModel()
-        else:
-            print("Backbone not valid")
-            exit(-1)
-
-        self.attention = AttentionDecoder(num_recurrent_units,
-                                          256, 256,
-                                          vocab_size)
-        print("Initialized Recognizer with alph_size", vocab_size)
-
-    def forward(self, inputs, save_dir=None):
-        emb = self.backbone(inputs, save_dir)
-        ans, att_w = self.attention(emb, save_dir)
-        return ans, att_w
-
-    def summary(self):
-        summary(self, [(1, 32, 200)])

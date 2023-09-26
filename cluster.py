@@ -48,7 +48,7 @@ def create_clusters(i_mat, alfa, part, old_path, path, prob, max_norm):
     else:
         writeIndex = True
     for element in l2norms3:
-        if writeIndex == True:
+        if writeIndex:
             class1 = int(element[0])
             class2 = int(element[1])
         else:

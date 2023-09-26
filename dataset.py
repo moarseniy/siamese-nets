@@ -33,6 +33,35 @@ def prepare_alph(alph_pt: str) -> (list, dict):
     return alph, alph_dict
 
 
+class SiameseDataset():
+    def choose_positive_random(self):
+        pos_c = np.random.randint(len(self.files_per_classes))
+        pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
+        return pos_c, pos_id
+
+    def create_positive(self, pos_c, pos_id):
+        anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
+        while anc_id == pos_id:
+            anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
+        return anc_id
+
+    def create_negative_random(self, pos_c):
+        neg_c = np.random.randint(len(self.files_per_classes))
+        while pos_c == neg_c:
+            neg_c = np.random.randint(len(self.files_per_classes))
+        neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
+        return neg_c, neg_id
+
+    def create_negative_clusters(self, pos_c):
+        neg_c = np.random.randint(len(self.files_per_classes))
+        while pos_c == neg_c:
+            neg_c = np.random.randint(len(self.files_per_classes))
+        neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
+
+    def get_alph_size(self) -> int:
+        return len(self.files_per_classes)
+
+
 class PHD08Dataset(Dataset):
     def __init__(self, cfg: dict):
         self.data_dir = cfg["valid_data_dir"]
@@ -61,7 +90,7 @@ class PHD08Dataset(Dataset):
             c, i = triplet_id[0], triplet_id[1]
             file = self.files_per_classes[c][i]
 
-            #image = read_image(file, ImageReadMode.GRAY)
+            # image = read_image(file, ImageReadMode.GRAY)
             image = Image.open(file).convert('L')
             trans1 = torchvision.transforms.ToTensor()
             transform = torchvision.transforms.Resize((37, 37))
@@ -94,6 +123,12 @@ class PHD08Dataset(Dataset):
             neg_c = np.random.randint(len(self.files_per_classes))
         neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
         return neg_c, neg_id
+
+    def create_negative_clusters(self, pos_c):
+        neg_c = np.random.randint(len(self.files_per_classes))
+        while pos_c == neg_c:
+            neg_c = np.random.randint(len(self.files_per_classes))
+        neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
 
     def get_alph_size(self) -> int:
         return len(self.files_per_classes)
@@ -145,7 +180,7 @@ class KorRecognitionDataset(Dataset):
                 bgr = torch.tensor(bgr_data[0]["data"]).reshape(1, 37, 37)
 
             image = bgr * mask
-            lbl = torch.tensor(int(data[3]["data"][0]))#.type(torch.LongTensor)
+            lbl = torch.tensor(int(data[3]["data"][0]))  # .type(torch.LongTensor)
 
             triplet_imgs.append(image)
             triplet_lbls.append(lbl)
@@ -158,7 +193,7 @@ class KorRecognitionDataset(Dataset):
         return sample
 
     def choose_positive_random(self):
-        pos_c = np.random.randint(len(self.alphabet))
+        pos_c = np.random.randint(len(self.files_per_classes))
         pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
         return pos_c, pos_id
 
@@ -169,14 +204,14 @@ class KorRecognitionDataset(Dataset):
         return anc_id
 
     def create_negative_random(self, pos_c):
-        neg_c = np.random.randint(len(self.alphabet))
+        neg_c = np.random.randint(len(self.files_per_classes))
         while pos_c == neg_c:
-            neg_c = np.random.randint(len(self.alphabet))
+            neg_c = np.random.randint(len(self.files_per_classes))
         neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
         return neg_c, neg_id
 
     def get_alph_size(self) -> int:
-        return len(self.alphabet)
+        return len(self.files_per_classes)
 
     def get_alph(self) -> list:
         return self.alphabet

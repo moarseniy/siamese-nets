@@ -32,7 +32,7 @@ if __name__ == "__main__":
         model.load_state_dict(checkpoint)#['model_state_dict'])
         print("Successfully loaded weights from", cfg['file_to_start'])
 
-    if cfg['validate']:
+    if cfg['validate_settings']['validate']:
         print('Validation started!')
         validate(cfg, model, valid_dataset)
     else:
