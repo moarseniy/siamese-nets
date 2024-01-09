@@ -1,5 +1,7 @@
 import os
 import os.path as op
+import time
+
 import torch
 
 import matplotlib.pyplot as plt
@@ -12,8 +14,12 @@ from torch.utils.data import Dataset
 from torchvision.io import read_image
 from torchvision.io import ImageReadMode
 import torchvision
+import random
 
 from PIL import Image
+from cluster import generate_clusters
+from cluster import merge_clusters
+from cluster import save_clusters
 
 
 def prepare_alph_old(alph_pt: str) -> list:
@@ -33,7 +39,10 @@ def prepare_alph(alph_pt: str) -> (list, dict):
     return alph, alph_dict
 
 
-class SiameseDataset():
+class SiameseDataset:
+    def __init__(self):
+        self.files_per_classes = []
+
     def choose_positive_random(self):
         pos_c = np.random.randint(len(self.files_per_classes))
         pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
@@ -53,21 +62,49 @@ class SiameseDataset():
         return neg_c, neg_id
 
     def create_negative_clusters(self, pos_c):
-        neg_c = np.random.randint(len(self.files_per_classes))
-        while pos_c == neg_c:
-            neg_c = np.random.randint(len(self.files_per_classes))
-        neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
+        neg_c, neg_id = None, None
+        if len(self.clusters) > 0:
+            for cluster in self.clusters:
+                if pos_c in cluster and self.inner_imp_prob < random.random():
+                    neg_c = cluster[np.random.randint(len(cluster))]
+                    while pos_c == neg_c:
+                        neg_c = cluster[np.random.randint(len(cluster))]
+                    neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
+        else:
+            neg_c, neg_id = self.create_negative_random(pos_c)
+        return neg_c, neg_id
 
     def get_alph_size(self) -> int:
         return len(self.files_per_classes)
 
+    def update_rules(self, ideals, save_pt, e):
+        generation_time = time.time()
+        norms_res = generate_clusters(ideals, self.raw_clusters, len(self.alphabet))
+        print('Generation time:', time.time() - generation_time)
 
-class PHD08Dataset(Dataset):
+        merge_time = time.time()
+        merge_clusters(norms_res, self.clusters)
+        print('Merge time:', time.time() - merge_time)
+
+        save_clusters(os.path.join(save_pt, str(e) + '_clusters.json'), self.clusters, self.alphabet)
+        exit(-1)
+
+class PHD08Dataset(Dataset, SiameseDataset):
     def __init__(self, cfg: dict):
-        self.data_dir = cfg["valid_data_dir"]
+        self.type = cfg['batch_settings']['type']
+        self.positive_mode = cfg['batch_settings']['positive_mode']
+        self.negative_mode = cfg['batch_settings']['negative_mode']
+
+        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
+        self.raw_clusters = cfg['batch_settings']['raw_clusters']
+
+        self.data_dir = cfg['valid_data_dir']
+        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+
         png_data_dirs = os.listdir(self.data_dir)
         self.all_files, self.files_per_classes = [], []
-        print("======= LOADING DATA =======")
+
+        print("======= LOADING DATA(PHD08Dataset) =======")
         for class_dir in png_data_dirs:
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
@@ -81,7 +118,12 @@ class PHD08Dataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         pos_c, pos_id = self.choose_positive_random()
         anc_id = self.create_positive(pos_c, pos_id)
-        neg_c, neg_id = self.create_negative_random(pos_c)
+
+        neg_c, neg_id = None, None
+        if self.negative_mode == "auto_clusters":
+            neg_c, neg_id = self.create_negative_clusters(pos_c)
+        else:
+            neg_c, neg_id = self.create_negative_random(pos_c)
 
         triplet_ids = [[pos_c, anc_id], [pos_c, pos_id], [neg_c, neg_id]]
 
@@ -106,42 +148,26 @@ class PHD08Dataset(Dataset):
 
         return sample
 
-    def choose_positive_random(self):
-        pos_c = np.random.randint(len(self.files_per_classes))
-        pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
-        return pos_c, pos_id
 
-    def create_positive(self, pos_c, pos_id):
-        anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
-        while anc_id == pos_id:
-            anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
-        return anc_id
-
-    def create_negative_random(self, pos_c):
-        neg_c = np.random.randint(len(self.files_per_classes))
-        while pos_c == neg_c:
-            neg_c = np.random.randint(len(self.files_per_classes))
-        neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
-        return neg_c, neg_id
-
-    def create_negative_clusters(self, pos_c):
-        neg_c = np.random.randint(len(self.files_per_classes))
-        while pos_c == neg_c:
-            neg_c = np.random.randint(len(self.files_per_classes))
-        neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
-
-    def get_alph_size(self) -> int:
-        return len(self.files_per_classes)
-
-
-class KorRecognitionDataset(Dataset):
+class KorRecognitionDataset(Dataset, SiameseDataset):
     def __init__(self, cfg: dict, transforms):
         self.transforms = transforms
+
+        self.type = cfg['batch_settings']['type']
+        self.positive_mode = cfg['batch_settings']['positive_mode']
+        self.negative_mode = cfg['batch_settings']['negative_mode']
+        self.clusters = []
+
+        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
+        self.raw_clusters = cfg['batch_settings']['raw_clusters']
+
         self.data_dir = cfg["train_data_dir"]
         json_data_dirs = os.listdir(self.data_dir)
+
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+
         self.all_files, self.files_per_classes = [], []
-        print("======= LOADING DATA =======")
+        print("======= LOADING DATA(KorRecognitionDataset) =======")
         for class_dir in json_data_dirs:
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
@@ -149,10 +175,6 @@ class KorRecognitionDataset(Dataset):
             self.all_files.extend(files)
         print('Train_dataset_length:', len(self.files_per_classes))
         assert len(self.alphabet) == len(self.files_per_classes)
-        # for font_dir in json_data_dirs:
-        #     files = os.listdir(op.join(self.data_dir, font_dir))
-        #     files = [op.join(self.data_dir, font_dir, fi) for fi in files]
-        #     self.all_files.extend(files)
 
     def __len__(self) -> int:
         return len(self.all_files)
@@ -161,7 +183,12 @@ class KorRecognitionDataset(Dataset):
 
         pos_c, pos_id = self.choose_positive_random()
         anc_id = self.create_positive(pos_c, pos_id)
-        neg_c, neg_id = self.create_negative_random(pos_c)
+
+        neg_c, neg_id = None, None
+        if self.negative_mode == "auto_clusters":
+            neg_c, neg_id = self.create_negative_clusters(pos_c)
+        else:
+            neg_c, neg_id = self.create_negative_random(pos_c)
 
         triplet_ids = [[pos_c, anc_id], [pos_c, pos_id], [neg_c, neg_id]]
 
@@ -191,27 +218,6 @@ class KorRecognitionDataset(Dataset):
         }
 
         return sample
-
-    def choose_positive_random(self):
-        pos_c = np.random.randint(len(self.files_per_classes))
-        pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
-        return pos_c, pos_id
-
-    def create_positive(self, pos_c, pos_id):
-        anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
-        while anc_id == pos_id:
-            anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
-        return anc_id
-
-    def create_negative_random(self, pos_c):
-        neg_c = np.random.randint(len(self.files_per_classes))
-        while pos_c == neg_c:
-            neg_c = np.random.randint(len(self.files_per_classes))
-        neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
-        return neg_c, neg_id
-
-    def get_alph_size(self) -> int:
-        return len(self.files_per_classes)
 
     def get_alph(self) -> list:
         return self.alphabet

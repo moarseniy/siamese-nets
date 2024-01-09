@@ -1,14 +1,15 @@
-from dataset import KorRecognitionDataset
-from dataset import PHD08Dataset
+from dataset import KorRecognitionDataset, PHD08Dataset
 from model import *
-from train_utils import prepare_dirs, train, validate
+from train_utils import prepare_dirs, train
+from eval_model import validate
 import ujson as json
 
 if __name__ == "__main__":
-    torch.cuda.set_device(0)
 
     with open("train_config.json", "r", encoding='utf8') as cfg_file:
         cfg = json.load(cfg_file)
+
+    torch.cuda.set_device(cfg['device'])
 
     save_pt, save_im_pt = prepare_dirs(cfg)
 

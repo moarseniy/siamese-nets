@@ -1,97 +1,76 @@
-import re
-import numpy as np
-import shutil
-
-from random import shuffle
-import operator
-
-import json
-from collections import OrderedDict
-
-import time
-import sys
+import torch
+import json, time
 
 
-def create_clusters(i_mat, alfa, part, old_path, path, prob, max_norm):
-    limit_size = int(part * i_mat.shape[1])
-
-    rand_id = np.where(np.linalg.norm(i_mat.T[:], axis=1) > 1e-10)[0]
-    np.random.shuffle(rand_id)
-    rand_id_new = rand_id[:limit_size]
-
-    size = int(alfa * len(rand_id_new) * (len(rand_id_new) - 1) * 0.5)
-
-    cut_mat = i_mat.T[rand_id_new]
-    l2norms3 = np.ones((size, 3)) * 1e+6
-    for i in range(1, len(rand_id_new)):
-        norms = np.linalg.norm(cut_mat[:i] - cut_mat[i], axis=1)
-        res = np.column_stack((np.column_stack((rand_id_new[:i], np.full((i), rand_id_new[i]))), norms))
-        res = res[(norms > 1e-10) & (norms < max_norm)]
-        if len(res) != 0:
-            l2norms3 = np.concatenate([l2norms3, res])
-            l2norms3 = l2norms3[l2norms3[:, 2].argsort()]
-            l2norms3 = l2norms3[:-len(res)]
-    l2norms3 = l2norms3[l2norms3[:, 2] < 1e+6]
-
-    first = False
-    second = False
-    index1 = 0
-    index2 = 0
-
-    with open(old_path) as f1:
-        out_clusters = json.load(f1, object_pairs_hook=OrderedDict)
-        out_clusters['clusters'] = []
-    if 'req_path' in out_clusters:
-        with open(out_clusters['req_path']) as f2:
-            kor_alphabet = json.load(f2)
-        writeIndex = False
+def generate_clusters(ideals, raw_clusters, classes_count):
+    norms_count = None
+    if raw_clusters < classes_count:
+        norms_count = raw_clusters
     else:
-        writeIndex = True
-    for element in l2norms3:
-        if writeIndex:
-            class1 = int(element[0])
-            class2 = int(element[1])
-        else:
-            class1 = kor_alphabet['alphabet'][int(element[0])][0]
-            class2 = kor_alphabet['alphabet'][int(element[1])][0]
-        for cluster in out_clusters['clusters']:
-            alphabet_set = set(cluster['alphabet'])
-            if class1 in alphabet_set:
+        norms_count = min(raw_clusters, classes_count * (classes_count - 1) * 0.5)
+
+    norms_res = torch.empty(norms_count).fill_(1e+10).cuda()
+    i_res = torch.empty(norms_count).fill_(1e+10).cuda()
+    j_res = torch.empty(norms_count).fill_(1e+10).cuda()
+    norms_res = torch.stack((norms_res, i_res, j_res), dim=1)
+
+    for i in range(classes_count - 1):
+        p0 = ideals[0:classes_count - i - 1, :]
+        p1 = ideals[i + 1:classes_count, :]
+
+        norms = torch.sqrt(torch.sum((p0 - p1) ** 2, dim=1))
+        i_tmp = torch.arange(0, classes_count - i - 1).cuda()
+        j_tmp = torch.arange(i + 1, classes_count).cuda()
+
+        norms = torch.stack((norms, i_tmp, j_tmp), dim=1)
+
+        norms_res = torch.cat((norms_res, norms))
+        norms_res = torch.stack(sorted(norms_res, key=lambda x: x[0]))[:norms_count]
+    return norms_res
+
+
+def merge_clusters(norms_res, clusters):
+    clusters = []
+    class1, class2 = None, None
+    for i in range(norms_res.size()[0]):
+        class1 = norms_res[i][1]
+        class2 = norms_res[i][2]
+
+        first, second = False, False
+        id1, id2 = None, None
+        for j in range(len(clusters)):
+            if class1 in clusters[j]:
                 first = True
-                index1 = out_clusters['clusters'].index(cluster)
-            if class2 in alphabet_set:
+                id1 = j
+            if class2 in clusters[j]:
                 second = True
-                index2 = out_clusters['clusters'].index(cluster)
+                id2 = j
 
-        if first and second:
-            out_clusters['clusters'][index1]['alphabet'].append(class2)
+        if first and not second:
+            clusters[id1].append(class2)
+        elif not first and second:
+            clusters[id2].append(class1)
+        elif not first and not second:
+            clusters.append([class1, class2])
         elif first and second:
-            out_clusters['clusters'][index2]['alphabet'].append(class1)
-        elif first and second:
-            slovar = {'inner_imp_prob': prob, 'alphabet': []}
-            slovar['alphabet'].append(class1)
-            slovar['alphabet'].append(class2)
-            out_clusters['clusters'].append(slovar)
-        elif first and second:
-            if index1 != index2:
-                slovar = {'inner_imp_prob': prob, 'alphabet': []}
-                new_cluster = out_clusters['clusters'][index1]['alphabet'] + out_clusters['clusters'][index2][
-                    'alphabet']
-                if index2 < index1:
-                    del out_clusters['clusters'][index1]
-                    del out_clusters['clusters'][index2]
-                if index1 < index2:
-                    del out_clusters['clusters'][index2]
-                    del out_clusters['clusters'][index1]
-                slovar['alphabet'] = new_cluster
-                out_clusters['clusters'].append(slovar)
-        first = False
-        second = False
+            if id1 != id2:
+                new_cluster = clusters[id1] + clusters[id2]
+                if id2 < id1:
+                    del clusters[id1]
+                    del clusters[id2]
+                if id1 < id2:
+                    del clusters[id2]
+                    del clusters[id1]
+                clusters.append(new_cluster)
 
-    shutil.copyfile(old_path, path)
-    with open(path, 'w') as fout:
-        out = json.dumps(out_clusters, indent=2, ensure_ascii=False)
-        fout.write(re.sub(r'",\s+', '", ', out))
-    cluster_size = len(out_clusters['clusters'])
 
-    return cluster_size
+def save_clusters(out_path, clusters, alphabet):
+    visible_clusters = []
+    for cluster in clusters:
+        visible_cluster = []
+        for sym in cluster:
+            visible_cluster.append(alphabet[sym])
+        visible_clusters.append(visible_cluster)
+
+    with open(out_path, 'w') as json_out:
+        json.dump(visible_clusters, json_out, indent=2)

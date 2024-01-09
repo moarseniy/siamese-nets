@@ -1,5 +1,5 @@
 import json
-import os
+import os, time
 import os.path as op
 from datetime import datetime
 import cv2
@@ -13,48 +13,48 @@ from torch import nn
 import torchvision
 from torchvision.utils import save_image
 
+def _g(w, h, x, y, c, n, i):
+    return ((c * h + y) * w + x) * n + i
 
-def validate(config, recognizer, valid_dataset):
-    valid_loader = DataLoader(dataset=valid_dataset,
-                              batch_size=config['minibatch_size'],
-                              shuffle=True,
-                              num_workers=10)
+def export_fm(fm, out_pt):
+    print(out_pt)
+    f = open(out_pt, "w")
 
-    pbar = tqdm(valid_loader)
+    if len(fm.shape) == 4:
+        h = fm.shape[2]
+        w = fm.shape[3]
+        nImgs = fm.shape[0]
+        channels = fm.shape[1]
+    elif len(fm.shape) == 3:
+        h = 1
+        w = fm.shape[2]
+        nImgs = fm.shape[0]
+        channels = fm.shape[1]
+    elif len(fm.shape) == 2:
+        h = 1
+        w = 1
+        nImgs = fm.shape[0]
+        channels = fm.shape[1]
+    else:
+        channels = fm.shape[0]
+        h = 1
+        w = 1
+        nImgs = 1
 
-    descrs = []
-    with open(config['ideals'], 'r') as json_ideal:
-        data = json.load(json_ideal)
-        for key, value in data.items():
-            descrs.append(value)
-
-    count = torch.zeros(valid_dataset.get_alph_size()).cuda()
-    for idx, mb in enumerate(pbar):
-        anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
-        a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
-
-        data_out = recognizer(anchor)
-        min_norm = torch.empty(data_out.size()[0]).fill_(1e+10).cuda()
-
-        ids = torch.zeros(a_lbl.size()).cuda()
-
-        i = 0
-        for descr in descrs:
-            cur_norm = torch.sum((data_out - torch.tensor(descr).cuda()) ** 2, dim=1)
-
-            min_norm[cur_norm < min_norm] = cur_norm[cur_norm < min_norm]
-            ids[cur_norm < min_norm] = torch.tensor(i, dtype=torch.float).cuda()
-            i += 1
-
-        count += a_lbl == ids
-        print(torch.sum(count))
-
-    print('Result', torch.sum(count), len(valid_loader))
-    print(count)
-    exit(0)
-
-
-
+    print("size", w, h, channels, nImgs, file=f)
+    for c in range(channels):
+        for y in range(h):
+            for x in range(w):
+                for n in range(nImgs):
+                    if len(fm.shape) == 4:
+                        it = fm[n, c, y, x].item()
+                    elif len(fm.shape) == 3:
+                        it = fm[n, c, x].item()
+                    elif len(fm.shape) == 2:
+                        it = fm[n, c].item()
+                    else:
+                        it = fm[c].item()
+                    print("{:.6e}".format(it), file=f, end=" ")
 
 def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, save_im_pt, start_ep):
     train_loader = DataLoader(dataset=train_dataset,
@@ -74,9 +74,10 @@ def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, 
     # print(trans2(valid_dataset[40]['image'][0]))
     # print(trans1(train_dataset[40]['image'][0]))
     # exit(-1)
+    save_debug = False
 
     ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
-    counter = torch.zeros(train_dataset.get_alph_size()).cuda()
+    counter = torch.empty(train_dataset.get_alph_size()).fill_(1e-10).cuda()
 
     min_valid_loss = np.inf
     triplet_loss = nn.TripletMarginLoss(margin=1.0).cuda()
@@ -92,11 +93,12 @@ def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, 
 
             anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
 
-            if idx == 0:
+            if idx == 0 and save_debug:
                 save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_train' + str(e) + '.png'))
                 save_image(positive[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
                 save_image(negative[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
 
+            # save ideals
             ideals[a_lbl] += anchor_out.detach()
             ideals[p_lbl] += positive_out.detach()
             ideals[n_lbl] += negative_out.detach()
@@ -116,6 +118,13 @@ def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, 
             # pbar.set_description("epoch %d G [Loss %.4f]"
             #                      % (e, Loss.item()))
 
+        ideals = torch.div(ideals.T, counter).T
+        if config['batch_settings']['negative_mode'] == 'auto_clusters':
+            start_time = time.time()
+            print('Started generation of clusters')
+            train_dataset.update_rules(ideals, save_pt, e)
+            print('Finished generation of clusters', time.time() - start_time)
+
         valid_loss = 0.0
         # recognizer.eval()
         pbar = tqdm(valid_loader)
@@ -124,7 +133,7 @@ def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, 
 
             anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
             a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
-            if idx == 0:
+            if idx == 0 and save_debug:
                 save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_test' + str(e) + '.png'))
                 save_image(positive[0], os.path.join(save_im_pt, 'out_pos_test' + str(e) + '.png'))
                 save_image(negative[0], os.path.join(save_im_pt, 'out_neg_test' + str(e) + '.png'))
@@ -140,28 +149,29 @@ def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, 
             print(f'Validation Loss Decreased({min_valid_loss:.6f}--->{valid_loss:.6f}) \t Saving The Model')
             min_valid_loss = valid_loss
 
+            ep_save_pt = op.join(save_pt, str(e))
+            os.mkdir(ep_save_pt)
+
             torch.save({
                 'epoch': e,
                 'model_state_dict': recognizer.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': valid_loss,
-            }, op.join(save_pt, str(e) + ".pt"))
+            }, op.join(ep_save_pt, "model.pt"))
 
-            # torch.save({},  op.join(save_pt, str(e) + ".pt"))
-            ideals = torch.div(ideals.T, counter).T
+            # ideals = torch.div(ideals.T, counter).T
             ideals_dict = {}
 
             for i in range(train_dataset.get_alph_size()):
                 ideals_dict[str(i)] = ideals[i].cpu().tolist()
 
-            with open(op.join(save_pt, 'ideals_' + str(e) + '.json'), 'w') as out:
+            with open(op.join(ep_save_pt, 'ideals.json'), 'w') as out:
                 json.dump(ideals_dict, out)
-            with open(op.join(save_pt, 'counter_' + str(e) + '.json'), 'w') as out:
+            with open(op.join(ep_save_pt, 'counter.json'), 'w') as out:
                 json.dump(counter.cpu().tolist(), out)
 
         ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
         counter = torch.zeros(train_dataset.get_alph_size()).cuda()
-
 
 
 def prepare_dirs(config):

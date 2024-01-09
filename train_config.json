@@ -4,6 +4,7 @@
   "checkpoint_pt": "/home/arseniy/siamese_out/cc",
   "images_pt" : "/home/arseniy/siamese_out/im",
   "alph_pt": "/home/arseniy/factory/tmp_nn/kor_101_mfcr_torch/kor_101_mfcr.json",
+  "device": 0,
   "file_to_start": "",
   "minibatch_size": 10240,
   "epoch_num": 1000,
@@ -14,7 +15,7 @@
   "batch_settings": {
     "type": "triplets",
     "positive_mode": "random",
-    "negative_mode": "random",
+    "negative_mode": "auto_clusters1",
     "inner_imp_prob": 0.4,
     "raw_clusters": 30000,
     "sym_probs_gamma": 2.0,
