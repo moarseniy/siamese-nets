@@ -39,6 +39,41 @@ def prepare_alph(alph_pt: str) -> (list, dict):
     return alph, alph_dict
 
 
+class PHD08ValidDataset(Dataset):
+    def __init__(self, cfg: dict):
+        self.data_dir = cfg['valid_data_dir']
+        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+
+        png_data_dirs = os.listdir(self.data_dir)
+        self.all_files, self.all_classes = [], []
+        self.files_per_classes = []
+
+        print("======= LOADING DATA(PHD08ValidDataset) =======")
+        for class_dir in png_data_dirs:
+            files = os.listdir(op.join(self.data_dir, class_dir))
+            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
+            self.all_classes.extend([float(class_dir) for fi in files])
+            self.all_files.extend(files)
+            self.files_per_classes.append(files)
+        print('Valid_dataset_length: ', len(self.all_files), 'Valid_dataset_alph_length: ', len(self.all_classes))
+
+    def __len__(self) -> int:
+        return len(self.all_files)
+
+    def __getitem__(self, idx: int) -> dict:
+        image = Image.open(self.all_files[idx]).convert('L')
+        trans1 = torchvision.transforms.ToTensor()
+        transform = torchvision.transforms.Resize((37, 37))
+
+        sample = {
+            "image": transform(trans1(image)),
+            "label": torch.tensor(self.all_classes[idx])
+        }
+
+        return sample
+
+    def get_alph_size(self) -> int:
+        return len(self.files_per_classes)
 class SiameseDataset:
     def __init__(self):
         self.files_per_classes = []
@@ -101,16 +136,15 @@ class PHD08Dataset(Dataset, SiameseDataset):
         self.data_dir = cfg['valid_data_dir']
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
-        png_data_dirs = os.listdir(self.data_dir)
         self.all_files, self.files_per_classes = [], []
 
         print("======= LOADING DATA(PHD08Dataset) =======")
-        for class_dir in png_data_dirs:
+        for class_dir in os.listdir(self.data_dir):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
             self.files_per_classes.append(files)
             self.all_files.extend(files)
-        print('Valid_dataset_length:', len(self.files_per_classes))
+        print('Valid_dataset_length: ', len(self.files_per_classes), len(self.all_files))
 
     def __len__(self) -> int:
         return len(self.all_files)
@@ -162,18 +196,17 @@ class KorRecognitionDataset(Dataset, SiameseDataset):
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
 
         self.data_dir = cfg["train_data_dir"]
-        json_data_dirs = os.listdir(self.data_dir)
 
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files, self.files_per_classes = [], []
         print("======= LOADING DATA(KorRecognitionDataset) =======")
-        for class_dir in json_data_dirs:
+        for class_dir in os.listdir(self.data_dir):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
             self.files_per_classes.append(files)
             self.all_files.extend(files)
-        print('Train_dataset_length:', len(self.files_per_classes))
+        print('Train_dataset_length: ', len(self.files_per_classes), len(self.all_files))
         assert len(self.alphabet) == len(self.files_per_classes)
 
     def __len__(self) -> int:
@@ -207,7 +240,7 @@ class KorRecognitionDataset(Dataset, SiameseDataset):
                 bgr = torch.tensor(bgr_data[0]["data"]).reshape(1, 37, 37)
 
             image = bgr * mask
-            lbl = torch.tensor(int(data[3]["data"][0]))  # .type(torch.LongTensor)
+            lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
 
             triplet_imgs.append(image)
             triplet_lbls.append(lbl)

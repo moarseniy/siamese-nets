@@ -12,6 +12,7 @@ import numpy as np
 from torch import nn
 import torchvision
 from torchvision.utils import save_image
+from eval_model import validate
 
 def _g(w, h, x, y, c, n, i):
     return ((c * h + y) * w + x) * n + i
@@ -56,11 +57,16 @@ def export_fm(fm, out_pt):
                         it = fm[c].item()
                     print("{:.6e}".format(it), file=f, end=" ")
 
-def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, save_im_pt, start_ep):
+def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_dataset, save_pt, save_im_pt, start_ep):
     train_loader = DataLoader(dataset=train_dataset,
                               batch_size=config['minibatch_size'],
                               shuffle=True,
                               num_workers=10)
+
+    # test_loader = DataLoader(dataset=test_dataset,
+    #                           batch_size=1024,
+    #                           shuffle=True,
+    #                           num_workers=10)
 
     valid_loader = DataLoader(dataset=valid_dataset,
                               batch_size=1024,
@@ -79,55 +85,62 @@ def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, 
     ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
     counter = torch.empty(train_dataset.get_alph_size()).fill_(1e-10).cuda()
 
-    min_valid_loss = np.inf
+    min_test_loss = np.inf
     triplet_loss = nn.TripletMarginLoss(margin=1.0).cuda()
+
+    stat = {'epochs': [],
+            'train_losses': [],
+            'valid_losses': [],
+            'acc': []}
 
     for e in range(start_ep, config['epoch_num']):
         train_loss = 0.0
         pbar = tqdm(train_loader)
+        for iter in range(20):
+            for idx, mb in enumerate(pbar):
 
-        for idx, mb in enumerate(pbar):
+                anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
+                a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
 
-            anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
-            a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
+                anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
 
-            anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
+                if idx == 0 and save_debug:
+                    save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_train' + str(e) + '.png'))
+                    save_image(positive[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
+                    save_image(negative[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
 
-            if idx == 0 and save_debug:
-                save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_train' + str(e) + '.png'))
-                save_image(positive[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
-                save_image(negative[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
+                # save ideals
+                ideals[a_lbl] += anchor_out.detach()
+                ideals[p_lbl] += positive_out.detach()
+                ideals[n_lbl] += negative_out.detach()
+                counter[a_lbl] += 1
+                counter[p_lbl] += 1
+                counter[n_lbl] += 1
 
-            # save ideals
-            ideals[a_lbl] += anchor_out.detach()
-            ideals[p_lbl] += positive_out.detach()
-            ideals[n_lbl] += negative_out.detach()
-            counter[a_lbl] += 1
-            counter[p_lbl] += 1
-            counter[n_lbl] += 1
+                Loss = triplet_loss(anchor_out, positive_out, negative_out)
 
-            Loss = triplet_loss(anchor_out, positive_out, negative_out)
+                optimizer.zero_grad()
+                Loss.backward()
+                optimizer.step()
 
-            optimizer.zero_grad()
-            Loss.backward()
-            optimizer.step()
+                train_loss += Loss.item()
 
-            train_loss += Loss.item()
-
-            print("epoch %d Train [Loss %.4f]" % (e, Loss.item()))
-            # pbar.set_description("epoch %d G [Loss %.4f]"
-            #                      % (e, Loss.item()))
+                print("epoch %d Train [Loss %.4f]" % (e, Loss.item()))
+                # pbar.set_description("epoch %d G [Loss %.4f]"
+                #                      % (e, Loss.item()))
 
         ideals = torch.div(ideals.T, counter).T
+
         if config['batch_settings']['negative_mode'] == 'auto_clusters':
             start_time = time.time()
             print('Started generation of clusters')
             train_dataset.update_rules(ideals, save_pt, e)
             print('Finished generation of clusters', time.time() - start_time)
-
-        valid_loss = 0.0
+        """
+        test_loss = 0.0
         # recognizer.eval()
-        pbar = tqdm(valid_loader)
+        pbar = tqdm(test_loader)
+        acc_count = torch.zeros(valid_dataset.get_alph_size()).cuda()
         for idx, mb in enumerate(pbar):
             anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
 
@@ -140,23 +153,28 @@ def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, 
 
             Loss = triplet_loss(anchor_out, positive_out, negative_out)
 
-            valid_loss += Loss.item()
+            test_loss += Loss.item()
             print("epoch %d Valid [Loss %.4f]" % (e, Loss.item()))
 
-        print(f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)} \t\t Validation Loss: {valid_loss / len(valid_loader)}')
+        print(f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)} \t\t Validation Loss: {test_loss / len(test_loader)}')
 
-        if min_valid_loss > valid_loss:
-            print(f'Validation Loss Decreased({min_valid_loss:.6f}--->{valid_loss:.6f}) \t Saving The Model')
-            min_valid_loss = valid_loss
+        if min_test_loss > test_loss:
+            print(f'Validation Loss Decreased({min_test_loss:.6f}--->{test_loss / len(test_loader):.6f}) \t Saving The Model')
+            min_valid_loss = test_loss
 
+            
+        """
+        print(f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)}')
+        to_test = True
+        if to_test:
             ep_save_pt = op.join(save_pt, str(e))
-            os.mkdir(ep_save_pt)
-
+            if not os.path.exists(ep_save_pt):
+                os.mkdir(ep_save_pt)
             torch.save({
                 'epoch': e,
                 'model_state_dict': recognizer.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': valid_loss,
+                'loss': 0.0,#test_loss,
             }, op.join(ep_save_pt, "model.pt"))
 
             # ideals = torch.div(ideals.T, counter).T
@@ -169,6 +187,31 @@ def train(config, recognizer, optimizer, train_dataset, valid_dataset, save_pt, 
                 json.dump(ideals_dict, out)
             with open(op.join(ep_save_pt, 'counter.json'), 'w') as out:
                 json.dump(counter.cpu().tolist(), out)
+
+            stat['epochs'].append(e)
+            stat['train_losses'].append(train_loss / len(train_loader))
+            # stat['valid_losses'].append(test_loss / len(test_loader))
+
+            acc = validate(config, recognizer, valid_dataset, ideals)
+
+            stat['acc'].append(acc.item())
+
+            plt.figure(figsize=(12, 7))
+            plt.xlabel("Epoch", fontsize=18)
+
+            # plt.plot(stat['epochs'], stat['train_losses'], 'o-', label='train loss', ms=4)  # , alpha=0.7, label='0.01', lw=5, mec='b', mew=1, ms=7)
+            # plt.plot(stat['epochs'], stat['valid_losses'], 'o-.', label='valid loss', ms=4)  # , alpha=0.7, label='0.1', lw=5, mec='b', mew=1, ms=7)
+            plt.plot(stat['epochs'], stat['acc'], 'o--', label='accuracy', ms=4)  # , alpha=0.7, label='0.3', lw=5, mec='b', mew=1, ms=7)
+
+            plt.legend(fontsize=18,
+                       ncol=2,  # количество столбцов
+                       facecolor='oldlace',  # цвет области
+                       edgecolor='black',  # цвет крайней линии
+                       title='value',  # заголовок
+                       title_fontsize='18'  # размер шрифта заголовка
+                       )
+            plt.grid(True)
+            plt.savefig(op.join(ep_save_pt, 'graph.png'))
 
         ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
         counter = torch.zeros(train_dataset.get_alph_size()).cuda()

@@ -1,4 +1,4 @@
-from dataset import KorRecognitionDataset, PHD08Dataset
+from dataset import KorRecognitionDataset, PHD08Dataset, PHD08ValidDataset
 from model import *
 from train_utils import prepare_dirs, train
 from eval_model import validate
@@ -16,7 +16,8 @@ if __name__ == "__main__":
     transforms = prepare_augmentation()
 
     train_dataset = KorRecognitionDataset(cfg=cfg, transforms=transforms)
-    valid_dataset = PHD08Dataset(cfg=cfg)
+    test_dataset = PHD08Dataset(cfg=cfg)
+    valid_dataset = PHD08ValidDataset(cfg=cfg)
     print(torch.cuda.is_available())
 
     model = KorNet().cuda()
@@ -25,7 +26,7 @@ if __name__ == "__main__":
 
 
     start_ep = 0
-    if cfg['file_to_start']:
+    if cfg['file_to_start'] and False:
         chpnt = cfg['file_to_start'].split("/")[-1]
         start_ep = int(chpnt.split(".")[0]) + 1
 
@@ -43,6 +44,7 @@ if __name__ == "__main__":
               recognizer=model,
               optimizer=model_optimizer,
               train_dataset=train_dataset,
+              test_dataset=test_dataset,
               valid_dataset=valid_dataset,
               save_pt=save_pt,
               save_im_pt=save_im_pt,
