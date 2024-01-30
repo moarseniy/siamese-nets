@@ -9,24 +9,17 @@ from dataset import PHD08Dataset
 from dataset import PHD08ValidDataset
 
 
-def validate(config, recognizer, valid_dataset, descrs):
-    valid_loader = DataLoader(dataset=valid_dataset,
-                              batch_size=config['minibatch_size'],
-                              shuffle=True,
-                              num_workers=10)
-
+def validate(config, recognizer, valid_loader, descrs):
     pbar = tqdm(valid_loader)
 
-    count = 0#torch.zeros(valid_dataset.get_alph_size()).cuda()
+    count = 0  # torch.zeros(valid_dataset.get_alph_size()).cuda()
     for idx, mb in enumerate(pbar):
         img = mb['image'].cuda()
         lbl = mb['label'].cuda()
 
-
-
         data_out = recognizer(img)
-        min_norm = torch.empty(data_out.size()[0]).fill_(1e+10).cuda()
 
+        min_norm = torch.empty(data_out.size()[0]).fill_(1e+10).cuda()
         ids = torch.zeros(lbl.size()).cuda()
 
         # print(img.size(), lbl.size(), data_out.size())
@@ -46,6 +39,7 @@ def validate(config, recognizer, valid_dataset, descrs):
 
     print('Result', count, len(valid_loader.dataset), 100 * count / len(valid_loader.dataset))
     return 100 * count / len(valid_loader.dataset)
+
 
 if __name__ == "__main__":
 
@@ -73,4 +67,9 @@ if __name__ == "__main__":
         for key, value in data.items():
             ideals[int(key)] = torch.FloatTensor(value)
 
-    res = validate(cfg, model, valid_dataset, ideals)
+    valid_loader = DataLoader(dataset=valid_dataset,
+                              batch_size=102400,  # config['minibatch_size'],
+                              shuffle=False,
+                              num_workers=10)
+
+    res = validate(cfg, model, valid_loader, ideals)

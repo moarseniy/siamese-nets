@@ -1,6 +1,6 @@
 from dataset import KorRecognitionDataset, PHD08Dataset, PHD08ValidDataset
 from model import *
-from train_utils import prepare_dirs, train
+from train_utils import prepare_dirs, run_training
 from eval_model import validate
 import ujson as json
 
@@ -24,28 +24,23 @@ if __name__ == "__main__":
 
     # model.summary()
 
-
     start_ep = 0
-    if cfg['file_to_start'] and False:
-        chpnt = cfg['file_to_start'].split("/")[-1]
-        start_ep = int(chpnt.split(".")[0]) + 1
+    if cfg['file_to_start']:
+        chpnt = cfg['file_to_start'].split("/")[-2]
+        start_ep = int(chpnt) + 1
 
         checkpoint = torch.load(cfg['file_to_start'])
-        model.load_state_dict(checkpoint)#['model_state_dict'])
+        model.load_state_dict(checkpoint)  # ['model_state_dict'])
         print("Successfully loaded weights from", cfg['file_to_start'])
 
-    if cfg['validate_settings']['validate']:
-        print('Validation started!')
-        validate(cfg, model, valid_dataset)
-    else:
-        model_optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    model_optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
-        train(config=cfg,
-              recognizer=model,
-              optimizer=model_optimizer,
-              train_dataset=train_dataset,
-              test_dataset=test_dataset,
-              valid_dataset=valid_dataset,
-              save_pt=save_pt,
-              save_im_pt=save_im_pt,
-              start_ep=start_ep)
+    run_training(config=cfg,
+                 recognizer=model,
+                 optimizer=model_optimizer,
+                 train_dataset=train_dataset,
+                 test_dataset=test_dataset,
+                 valid_dataset=valid_dataset,
+                 save_pt=save_pt,
+                 save_im_pt=save_im_pt,
+                 start_ep=start_ep)

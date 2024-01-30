@@ -14,8 +14,10 @@ import torchvision
 from torchvision.utils import save_image
 from eval_model import validate
 
+
 def _g(w, h, x, y, c, n, i):
     return ((c * h + y) * w + x) * n + i
+
 
 def export_fm(fm, out_pt):
     print(out_pt)
@@ -57,7 +59,141 @@ def export_fm(fm, out_pt):
                         it = fm[c].item()
                     print("{:.6e}".format(it), file=f, end=" ")
 
-def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_dataset, save_pt, save_im_pt, start_ep):
+
+def Dataloader_by_Index(data_loader, target=0):
+    for index, data in enumerate(data_loader, target):
+        return data
+    return None
+
+
+class ContrastiveLoss(torch.nn.Module):
+    def __init__(self, margin):
+        super(ContrastiveLoss, self).__init__()
+        self.margin = margin  # margin or radius
+
+    def forward(self, y1, y2, d=0):
+        # d = 0 means y1 and y2 are supposed to be same
+        # d = 1 means y1 and y2 are supposed to be different
+
+        euc_dist = torch.nn.functional.pairwise_distance(y1, y2)
+
+        if d == 0:
+            return torch.mean(torch.pow(euc_dist, 2))  # distance squared
+        else:  # d == 1
+            delta = self.margin - euc_dist  # sort of reverse distance
+            delta = torch.clamp(delta, min=0.0, max=None)
+            return torch.mean(torch.pow(delta, 2))  # mean over all rows
+
+
+def go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter):
+    pbar = tqdm(range(config["batch_settings"]["iterations"]))
+    for it in pbar:
+        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+        anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
+        a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
+
+        anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
+
+        if it == 0 and config["save_images"]:
+            save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_train' + str(e) + '.png'))
+            save_image(positive[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
+            save_image(negative[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
+
+        # save ideals
+        ideals[a_lbl] += anchor_out.detach()
+        ideals[p_lbl] += positive_out.detach()
+        ideals[n_lbl] += negative_out.detach()
+        counter[a_lbl] += 1
+        counter[p_lbl] += 1
+        counter[n_lbl] += 1
+
+        cur_loss = loss(anchor_out, positive_out, negative_out)
+
+        optimizer.zero_grad()
+        cur_loss.backward()
+        optimizer.step()
+
+        train_loss += cur_loss.item()
+
+        # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+        pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+
+    return train_loss
+
+
+def go_contrastive_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter):
+    pbar = tqdm(range(config["batch_settings"]["iterations"]))
+    for it in pbar:
+        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+        first, second = mb['image'][0].cuda(), mb['image'][1].cuda()
+        f_lbl, s_lbl = mb['label'][0].cuda(), mb['label'][1].cuda()
+
+        first_out, second_out = recognizer(first), recognizer(second)
+
+        if it == 0 and config["save_images"]:
+            save_image(first[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
+            save_image(second[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
+
+        # save ideals
+        ideals[f_lbl] += first_out.detach()
+        ideals[s_lbl] += second_out.detach()
+        counter[f_lbl] += 1
+        counter[s_lbl] += 1
+
+        cur_loss = loss(first_out, second_out)
+
+        optimizer.zero_grad()
+        cur_loss.backward()
+        optimizer.step()
+
+        train_loss += cur_loss.item()
+
+        pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+
+    return train_loss
+
+
+def go_triplet_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e):
+    # recognizer.eval()
+    pbar = tqdm(range(config["batch_settings"]["iterations"]))
+    for it in pbar:
+        mb = test_loader[torch.randint(len(test_loader), size=(1,)).item()]
+        anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
+
+        anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
+        a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
+        if it == 0 and config["save_images"]:
+            save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_test' + str(e) + '.png'))
+            save_image(positive[0], os.path.join(save_im_pt, 'out_pos_test' + str(e) + '.png'))
+            save_image(negative[0], os.path.join(save_im_pt, 'out_neg_test' + str(e) + '.png'))
+
+        cur_loss = loss(anchor_out, positive_out, negative_out)
+
+        test_loss += cur_loss.item()
+        print("epoch %d Valid [Loss %.4f]" % (e, cur_loss.item()))
+
+
+def go_contrastive_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e):
+    # recognizer.eval()
+    pbar = tqdm(range(config["batch_settings"]["iterations"]))
+    for it in pbar:
+        mb = test_loader[torch.randint(len(test_loader), size=(1,)).item()]
+        first, second = mb['image'][0].cuda(), mb['image'][1].cuda()
+
+        first_out, second_out = recognizer(first), recognizer(second)
+        a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
+        if it == 0 and config["save_images"]:
+            save_image(first[0], os.path.join(save_im_pt, 'out_first_test' + str(e) + '.png'))
+            save_image(second[0], os.path.join(save_im_pt, 'out_second_test' + str(e) + '.png'))
+
+        cur_loss = loss(first_out, second_out)
+
+        test_loss += cur_loss.item()
+        print("epoch %d Valid [Loss %.4f]" % (e, cur_loss.item()))
+
+
+def run_training(config, recognizer, optimizer, train_dataset, test_dataset, valid_dataset, save_pt, save_im_pt,
+                 start_ep):
     train_loader = DataLoader(dataset=train_dataset,
                               batch_size=config['minibatch_size'],
                               shuffle=True,
@@ -69,9 +205,14 @@ def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_data
     #                           num_workers=10)
 
     valid_loader = DataLoader(dataset=valid_dataset,
-                              batch_size=1024,
-                              shuffle=True,
+                              batch_size=102400,  # config['minibatch_size'],
+                              shuffle=False,
                               num_workers=10)
+
+    # if config['validate_settings']['validate'] and config['file_to_start']:
+    #     print('Validation started!')
+    #     validate(config, recognizer, valid_loader)
+    #     exit(0)
 
     # print(train_dataset[40]['image'][0], valid_dataset[40]['image'][0])
     # trans1 = torchvision.transforms.ToTensor()
@@ -80,13 +221,18 @@ def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_data
     # print(trans2(valid_dataset[40]['image'][0]))
     # print(trans1(train_dataset[40]['image'][0]))
     # exit(-1)
-    save_debug = False
+
+    metric_type = config['batch_settings']['type']
 
     ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
     counter = torch.empty(train_dataset.get_alph_size()).fill_(1e-10).cuda()
 
     min_test_loss = np.inf
-    triplet_loss = nn.TripletMarginLoss(margin=1.0).cuda()
+    loss = None
+    if metric_type == 'triplet':
+        loss = nn.TripletMarginLoss(margin=config['batch_settings']['alpha_margin']).cuda()
+    elif metric_type == 'contrastive':
+        loss = nn.ContrastiveLoss(margin=config['batch_settings']['alpha_margin']).cuda()
 
     stat = {'epochs': [],
             'train_losses': [],
@@ -94,79 +240,44 @@ def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_data
             'acc': []}
 
     for e in range(start_ep, config['epoch_num']):
-        train_loss = 0.0
         pbar = tqdm(train_loader)
-        for iter in range(20):
-            for idx, mb in enumerate(pbar):
+        # for idx, mb in enumerate(pbar):
 
-                anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
-                a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
-
-                anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
-
-                if idx == 0 and save_debug:
-                    save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_train' + str(e) + '.png'))
-                    save_image(positive[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
-                    save_image(negative[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
-
-                # save ideals
-                ideals[a_lbl] += anchor_out.detach()
-                ideals[p_lbl] += positive_out.detach()
-                ideals[n_lbl] += negative_out.detach()
-                counter[a_lbl] += 1
-                counter[p_lbl] += 1
-                counter[n_lbl] += 1
-
-                Loss = triplet_loss(anchor_out, positive_out, negative_out)
-
-                optimizer.zero_grad()
-                Loss.backward()
-                optimizer.step()
-
-                train_loss += Loss.item()
-
-                print("epoch %d Train [Loss %.4f]" % (e, Loss.item()))
-                # pbar.set_description("epoch %d G [Loss %.4f]"
-                #                      % (e, Loss.item()))
+        train_loss = 0.0
+        if metric_type == 'triplet':
+            train_loss = go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
+                                          ideals,
+                                          counter)
+        elif metric_type == 'contrastive':
+            train_loss = go_contrastive_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt,
+                                              e, ideals,
+                                              counter)
 
         ideals = torch.div(ideals.T, counter).T
+
+        # test_loss = 0.0
+        # to_test = False
+        # if to_test:
+        #     go_test()
+        #
+        #     print(
+        #         f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)} \t\t Validation Loss: {test_loss / len(test_loader)}')
+        #
+        #     if min_test_loss > test_loss:
+        #         print(
+        #             f'Validation Loss Decreased({min_test_loss:.6f}--->{test_loss / len(test_loader):.6f}) \t Saving The Model')
+        #         min_valid_loss = test_loss
 
         if config['batch_settings']['negative_mode'] == 'auto_clusters':
             start_time = time.time()
             print('Started generation of clusters')
             train_dataset.update_rules(ideals, save_pt, e)
             print('Finished generation of clusters', time.time() - start_time)
-        """
-        test_loss = 0.0
-        # recognizer.eval()
-        pbar = tqdm(test_loader)
-        acc_count = torch.zeros(valid_dataset.get_alph_size()).cuda()
-        for idx, mb in enumerate(pbar):
-            anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
 
-            anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
-            a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
-            if idx == 0 and save_debug:
-                save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_test' + str(e) + '.png'))
-                save_image(positive[0], os.path.join(save_im_pt, 'out_pos_test' + str(e) + '.png'))
-                save_image(negative[0], os.path.join(save_im_pt, 'out_neg_test' + str(e) + '.png'))
-
-            Loss = triplet_loss(anchor_out, positive_out, negative_out)
-
-            test_loss += Loss.item()
-            print("epoch %d Valid [Loss %.4f]" % (e, Loss.item()))
-
-        print(f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)} \t\t Validation Loss: {test_loss / len(test_loader)}')
-
-        if min_test_loss > test_loss:
-            print(f'Validation Loss Decreased({min_test_loss:.6f}--->{test_loss / len(test_loader):.6f}) \t Saving The Model')
-            min_valid_loss = test_loss
-
-            
-        """
         print(f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)}')
-        to_test = True
-        if to_test:
+
+        to_valid = True
+        if to_valid:
             ep_save_pt = op.join(save_pt, str(e))
             if not os.path.exists(ep_save_pt):
                 os.mkdir(ep_save_pt)
@@ -174,7 +285,7 @@ def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_data
                 'epoch': e,
                 'model_state_dict': recognizer.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': 0.0,#test_loss,
+                'loss': 0.0,  # test_loss,
             }, op.join(ep_save_pt, "model.pt"))
 
             # ideals = torch.div(ideals.T, counter).T
@@ -192,7 +303,7 @@ def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_data
             stat['train_losses'].append(train_loss / len(train_loader))
             # stat['valid_losses'].append(test_loss / len(test_loader))
 
-            acc = validate(config, recognizer, valid_dataset, ideals)
+            acc = validate(config, recognizer, valid_loader, ideals)
 
             stat['acc'].append(acc.item())
 
@@ -201,7 +312,8 @@ def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_data
 
             # plt.plot(stat['epochs'], stat['train_losses'], 'o-', label='train loss', ms=4)  # , alpha=0.7, label='0.01', lw=5, mec='b', mew=1, ms=7)
             # plt.plot(stat['epochs'], stat['valid_losses'], 'o-.', label='valid loss', ms=4)  # , alpha=0.7, label='0.1', lw=5, mec='b', mew=1, ms=7)
-            plt.plot(stat['epochs'], stat['acc'], 'o--', label='accuracy', ms=4)  # , alpha=0.7, label='0.3', lw=5, mec='b', mew=1, ms=7)
+            plt.plot(stat['epochs'], stat['acc'], 'o--', label='Max accuracy:' + str(stat['acc']),
+                     ms=4)  # , alpha=0.7, label='0.3', lw=5, mec='b', mew=1, ms=7)
 
             plt.legend(fontsize=18,
                        ncol=2,  # количество столбцов
@@ -213,8 +325,9 @@ def train(config, recognizer, optimizer, train_dataset, test_dataset, valid_data
             plt.grid(True)
             plt.savefig(op.join(ep_save_pt, 'graph.png'))
 
-        ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
-        counter = torch.zeros(train_dataset.get_alph_size()).cuda()
+        if e % config["batch_settings"]["make_clust_on_ep"] == 0:
+            ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
+            counter = torch.zeros(train_dataset.get_alph_size()).cuda()
 
 
 def prepare_dirs(config):
