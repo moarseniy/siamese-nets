@@ -170,7 +170,7 @@ def go_triplet_test(test_loader, config, recognizer, loss, test_loss, save_im_pt
         cur_loss = loss(anchor_out, positive_out, negative_out)
 
         test_loss += cur_loss.item()
-        print("epoch %d Valid [Loss %.4f]" % (e, cur_loss.item()))
+        pbar.set_description("epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
 
 
 def go_contrastive_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e):
@@ -189,7 +189,7 @@ def go_contrastive_test(test_loader, config, recognizer, loss, test_loss, save_i
         cur_loss = loss(first_out, second_out)
 
         test_loss += cur_loss.item()
-        print("epoch %d Valid [Loss %.4f]" % (e, cur_loss.item()))
+        pbar.set_description("epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
 
 
 def run_training(config, recognizer, optimizer, train_dataset, test_dataset, valid_dataset, save_pt, save_im_pt,
@@ -205,7 +205,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
     #                           num_workers=10)
 
     valid_loader = DataLoader(dataset=valid_dataset,
-                              batch_size=102400,  # config['minibatch_size'],
+                              batch_size=config['batch_settings']['elements_per_batch'],  # config['minibatch_size'],
                               shuffle=False,
                               num_workers=10)
 
@@ -232,7 +232,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
     if metric_type == 'triplet':
         loss = nn.TripletMarginLoss(margin=config['batch_settings']['alpha_margin']).cuda()
     elif metric_type == 'contrastive':
-        loss = nn.ContrastiveLoss(margin=config['batch_settings']['alpha_margin']).cuda()
+        loss = ContrastiveLoss(margin=config['batch_settings']['alpha_margin']).cuda()
 
     stat = {'epochs': [],
             'train_losses': [],
@@ -240,10 +240,11 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             'acc': []}
 
     for e in range(start_ep, config['epoch_num']):
-        pbar = tqdm(train_loader)
+        # pbar = tqdm(train_loader)
         # for idx, mb in enumerate(pbar):
 
         train_loss = 0.0
+        start_time = time.time()
         if metric_type == 'triplet':
             train_loss = go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
                                           ideals,
@@ -274,7 +275,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             train_dataset.update_rules(ideals, save_pt, e)
             print('Finished generation of clusters', time.time() - start_time)
 
-        print(f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)}')
+        print(f'Epoch {e} -> Training Loss({time.time() - start_time}s): {train_loss / len(train_loader)}')
 
         to_valid = True
         if to_valid:
@@ -312,7 +313,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
             # plt.plot(stat['epochs'], stat['train_losses'], 'o-', label='train loss', ms=4)  # , alpha=0.7, label='0.01', lw=5, mec='b', mew=1, ms=7)
             # plt.plot(stat['epochs'], stat['valid_losses'], 'o-.', label='valid loss', ms=4)  # , alpha=0.7, label='0.1', lw=5, mec='b', mew=1, ms=7)
-            plt.plot(stat['epochs'], stat['acc'], 'o--', label='Max accuracy:' + str(stat['acc']),
+            plt.plot(stat['epochs'], stat['acc'], 'o--', label='Max accuracy:' + str(max(stat['acc'])),
                      ms=4)  # , alpha=0.7, label='0.3', lw=5, mec='b', mew=1, ms=7)
 
             plt.legend(fontsize=18,

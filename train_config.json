@@ -11,9 +11,10 @@
   "epoch_num": 10000,
   "batch_settings": {
     "alpha_margin": 1,
-    "elements_per_batch": 102400,
+    "type": "contrastive",
+    "elements_per_batch": 10240,
     "iterations": 5,
-    "type": "triplet",
+    "gen_imp_ratio": 0.3,
     "positive_mode": "random",
     "negative_mode": "auto_clusters1",
     "inner_imp_prob": 0.4,

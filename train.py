@@ -1,4 +1,4 @@
-from dataset import KorRecognitionDataset, PHD08Dataset, PHD08ValidDataset
+from dataset import KorSyntheticTriplet, KorSyntheticContrastive, PHD08Dataset, PHD08ValidDataset
 from model import *
 from train_utils import prepare_dirs, run_training
 from eval_model import validate
@@ -14,11 +14,18 @@ if __name__ == "__main__":
     save_pt, save_im_pt = prepare_dirs(cfg)
 
     transforms = prepare_augmentation()
+    train_dataset, test_dataset = None, None
+    if cfg['batch_settings']['type'] == 'triplet':
+        train_dataset = KorSyntheticTriplet(cfg=cfg, transforms=transforms)
+    elif cfg['batch_settings']['type'] == 'contrastive':
+        train_dataset = KorSyntheticContrastive(cfg=cfg, transforms=transforms)
 
-    train_dataset = KorRecognitionDataset(cfg=cfg, transforms=transforms)
-    test_dataset = PHD08Dataset(cfg=cfg)
+    # test_dataset = PHD08Dataset(cfg=cfg)
+
     valid_dataset = PHD08ValidDataset(cfg=cfg)
-    print(torch.cuda.is_available())
+
+    if torch.cuda.is_available():
+        print(torch.cuda.get_device_name(cfg['device']) + ' is available!')
 
     model = KorNet().cuda()
 

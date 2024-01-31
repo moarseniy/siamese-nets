@@ -35,7 +35,7 @@ def prepare_alph(alph_pt: str) -> (list, dict):
     alph = [i[0] for i in alph[0]]
     # alph.append("NONE")
     alph_dict = {alph[i]: i for i in range(len(alph))}
-    print(alph_dict)
+    # print(alph_dict)
     return alph, alph_dict
 
 
@@ -74,6 +74,8 @@ class PHD08ValidDataset(Dataset):
 
     def get_alph_size(self) -> int:
         return len(self.files_per_classes)
+
+
 class SiameseDataset:
     def __init__(self):
         self.files_per_classes = []
@@ -123,6 +125,7 @@ class SiameseDataset:
 
         save_clusters(os.path.join(save_pt, str(e) + '_clusters.json'), self.clusters, self.alphabet)
         exit(-1)
+
 
 class PHD08Dataset(Dataset, SiameseDataset):
     def __init__(self, cfg: dict):
@@ -183,7 +186,86 @@ class PHD08Dataset(Dataset, SiameseDataset):
         return sample
 
 
-class KorRecognitionDataset(Dataset, SiameseDataset):
+class KorSyntheticContrastive(Dataset, SiameseDataset):
+    def __init__(self, cfg: dict, transforms):
+        self.transforms = transforms
+
+        self.type = cfg['batch_settings']['type']
+        self.positive_mode = cfg['batch_settings']['positive_mode']
+        self.negative_mode = cfg['batch_settings']['negative_mode']
+        self.gen_imp_ratio = cfg['batch_settings']['gen_imp_ratio']
+        self.clusters = []
+
+        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
+        self.raw_clusters = cfg['batch_settings']['raw_clusters']
+
+        self.data_dir = cfg["train_data_dir"]
+
+        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+
+        self.all_files, self.files_per_classes = [], []
+        print("======= LOADING DATA(KorSyntheticContrastive) =======")
+        for class_dir in os.listdir(self.data_dir):
+            files = os.listdir(op.join(self.data_dir, class_dir))
+            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
+            self.files_per_classes.append(files)
+            self.all_files.extend(files)
+        print('Train_dataset_length: ', len(self.files_per_classes), len(self.all_files))
+        assert len(self.alphabet) == len(self.files_per_classes)
+
+    def __len__(self) -> int:
+        return len(self.all_files)
+
+    def __getitem__(self, idx: int) -> dict:
+        if random.uniform(0, 1) < self.gen_imp_ratio:
+            pos_c, pos_id1 = self.choose_positive_random()
+
+            pos_id2 = self.create_positive(pos_c, pos_id1)
+
+            pair_ids = [[pos_c, pos_id1], [pos_c, pos_id2]]
+        else:
+            pos_c, pos_id = self.choose_positive_random()
+
+            neg_c, neg_id = None, None
+            if self.negative_mode == "auto_clusters":
+                neg_c, neg_id = self.create_negative_clusters(pos_c)
+            else:
+                neg_c, neg_id = self.create_negative_random(pos_c)
+
+            pair_ids = [[pos_c, pos_id], [neg_c, neg_id]]
+
+        pair_imgs, pair_lbls = [], []
+        for pair_id in pair_ids:
+            c, i = pair_id[0], pair_id[1]
+            file = self.files_per_classes[c][i]
+            with open(file, "r") as data_f:
+                data = json.load(data_f)
+                mask = torch.tensor(data[1]["data"]).reshape(1, 37, 37)
+
+            bgr_idx = np.random.randint(len(self.all_files))
+            bgr_file = self.all_files[bgr_idx]
+            with open(bgr_file, "r") as data_f:
+                bgr_data = json.load(data_f)
+                bgr = torch.tensor(bgr_data[0]["data"]).reshape(1, 37, 37)
+
+            image = bgr * mask
+            lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
+
+            pair_imgs.append(image)
+            pair_lbls.append(lbl)
+
+        sample = {
+            "image": pair_imgs,
+            "label": pair_lbls
+        }
+
+        return sample
+
+    def get_alph(self) -> list:
+        return self.alphabet
+
+
+class KorSyntheticTriplet(Dataset, SiameseDataset):
     def __init__(self, cfg: dict, transforms):
         self.transforms = transforms
 
@@ -200,7 +282,7 @@ class KorRecognitionDataset(Dataset, SiameseDataset):
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files, self.files_per_classes = [], []
-        print("======= LOADING DATA(KorRecognitionDataset) =======")
+        print("======= LOADING DATA(KorSyntheticTriplet) =======")
         for class_dir in os.listdir(self.data_dir):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]

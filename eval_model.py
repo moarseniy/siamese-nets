@@ -1,4 +1,4 @@
-import os
+import os, time
 import os.path as op
 
 import torch, json
@@ -10,6 +10,7 @@ from dataset import PHD08ValidDataset
 
 
 def validate(config, recognizer, valid_loader, descrs):
+    start_time = time.time()
     pbar = tqdm(valid_loader)
 
     count = 0  # torch.zeros(valid_dataset.get_alph_size()).cuda()
@@ -35,9 +36,9 @@ def validate(config, recognizer, valid_loader, descrs):
 
         # print(lbl.size(), ids.size())
         count += torch.sum(torch.tensor(lbl == ids))
-        print('Count:', count)
+        pbar.set_description("Valid [count %d]" % count)
 
-    print('Result', count, len(valid_loader.dataset), 100 * count / len(valid_loader.dataset))
+    print('Result', count, len(valid_loader.dataset), 100 * count / len(valid_loader.dataset), str(time.time() - start_time) + 's')
     return 100 * count / len(valid_loader.dataset)
 
 
