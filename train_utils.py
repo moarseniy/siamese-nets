@@ -71,18 +71,26 @@ class ContrastiveLoss(torch.nn.Module):
         super(ContrastiveLoss, self).__init__()
         self.margin = margin  # margin or radius
 
-    def forward(self, y1, y2, d=0):
+    def forward(self, output1, output2, label):
         # d = 0 means y1 and y2 are supposed to be same
         # d = 1 means y1 and y2 are supposed to be different
 
-        euc_dist = torch.nn.functional.pairwise_distance(y1, y2)
+        euclidean_distance = torch.nn.functional.pairwise_distance(output1, output2)
+        pos = (1 - label) * torch.pow(euclidean_distance, 2)
+        neg = (label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)
 
-        if d == 0:
-            return torch.mean(torch.pow(euc_dist, 2))  # distance squared
-        else:  # d == 1
-            delta = self.margin - euc_dist  # sort of reverse distance
-            delta = torch.clamp(delta, min=0.0, max=None)
-            return torch.mean(torch.pow(delta, 2))  # mean over all rows
+        loss_contrastive = torch.mean(pos + neg)
+        return loss_contrastive
+
+
+        # euc_dist = torch.nn.functional.pairwise_distance(y1, y2)
+        #
+        # if d == 0:
+        #     return torch.mean(torch.pow(euc_dist, 2))  # distance squared
+        # else:  # d == 1
+        #     delta = self.margin - euc_dist  # sort of reverse distance
+        #     delta = torch.clamp(delta, min=0.0, max=None)
+        #     return torch.mean(torch.pow(delta, 2))  # mean over all rows
 
 
 def go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter):
@@ -140,7 +148,7 @@ def go_contrastive_train(train_loader, config, recognizer, optimizer, loss, trai
         counter[f_lbl] += 1
         counter[s_lbl] += 1
 
-        cur_loss = loss(first_out, second_out)
+        cur_loss = loss(first_out, second_out, (f_lbl == s_lbl).long())
 
         optimizer.zero_grad()
         cur_loss.backward()

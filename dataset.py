@@ -4,6 +4,8 @@ import time
 
 import torch
 
+from multiprocessing import Pool, cpu_count
+
 import matplotlib.pyplot as plt
 import numpy as np
 import ujson as json
@@ -47,33 +49,60 @@ class PHD08ValidDataset(Dataset):
         png_data_dirs = os.listdir(self.data_dir)
         self.all_files, self.all_classes = [], []
         self.files_per_classes = []
+        self.data = []
 
         print("======= LOADING DATA(PHD08ValidDataset) =======")
-        for class_dir in png_data_dirs:
+        start_time = time.time()
+
+
+
+        trans1 = torchvision.transforms.ToTensor()
+        trans2 = torchvision.transforms.Resize((37, 37), antialias=False)
+
+        for class_dir in tqdm(png_data_dirs):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
+            for img_path in files:
+                image = Image.open(img_path).convert('L')
+
+                self.data.append({'img': trans2(trans1(image)),
+                                  'lbl': torch.tensor(float(class_dir))})
+
             self.all_classes.extend([float(class_dir) for fi in files])
             self.all_files.extend(files)
             self.files_per_classes.append(files)
-        print('Valid_dataset_length: ', len(self.all_files), 'Valid_dataset_alph_length: ', len(self.all_classes))
+        print('Valid_dataset_length: ', len(self.all_files),
+              '\nValid_dataset_alph_length: ', len(self.all_classes),
+              '\nTime:', time.time() - start_time)
 
     def __len__(self) -> int:
         return len(self.all_files)
 
     def __getitem__(self, idx: int) -> dict:
-        image = Image.open(self.all_files[idx]).convert('L')
-        trans1 = torchvision.transforms.ToTensor()
-        transform = torchvision.transforms.Resize((37, 37))
+        # image = Image.open(self.all_files[idx]).convert('L')
+        # trans1 = torchvision.transforms.ToTensor()
+        # transform = torchvision.transforms.Resize((37, 37))
+        #
+        # sample = {
+        #     "image": transform(trans1(image)),
+        #     "label": torch.tensor(self.all_classes[idx])
+        # }
 
         sample = {
-            "image": transform(trans1(image)),
-            "label": torch.tensor(self.all_classes[idx])
+            "image": self.data[idx]['img'],
+            "label": self.data[idx]['lbl']
         }
 
         return sample
 
     def get_alph_size(self) -> int:
         return len(self.files_per_classes)
+
+    def get_alphabet(self) -> list:
+        return self.alphabet
+
+    def get_alph_dict(self) -> dict:
+        return self.alph_dict
 
 
 class SiameseDataset:
@@ -217,6 +246,7 @@ class KorSyntheticContrastive(Dataset, SiameseDataset):
         return len(self.all_files)
 
     def __getitem__(self, idx: int) -> dict:
+        pair_ids = None
         if random.uniform(0, 1) < self.gen_imp_ratio:
             pos_c, pos_id1 = self.choose_positive_random()
 

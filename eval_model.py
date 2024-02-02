@@ -35,10 +35,14 @@ def validate(config, recognizer, valid_loader, descrs):
             i += 1
 
         # print(lbl.size(), ids.size())
-        count += torch.sum(torch.tensor(lbl == ids))
+        count += torch.sum(torch.tensor(lbl.detach() == ids.detach())).detach()
         pbar.set_description("Valid [count %d]" % count)
 
-    print('Result', count, len(valid_loader.dataset), 100 * count / len(valid_loader.dataset), str(time.time() - start_time) + 's')
+    print('\nCount: ', count,
+          '\nLength: ', len(valid_loader.dataset),
+          '\nAccuracy: ', 100 * count / len(valid_loader.dataset),
+          '\nTime: ', str(time.time() - start_time) + ' sec')
+
     return 100 * count / len(valid_loader.dataset)
 
 
@@ -48,9 +52,15 @@ if __name__ == "__main__":
         cfg = json.load(cfg_file)
 
     torch.cuda.set_device(cfg['device'])
-    print(torch.cuda.is_available())
+
+    if torch.cuda.is_available():
+        print(torch.cuda.get_device_name(cfg['device']) + ' is available!')
+    else:
+        print('No GPU!!!')
+        exit(-1)
 
     model = KorNet().cuda()
+
     if cfg['file_to_start']:
         print("Loading weights from", op.join(cfg['file_to_start'], 'model.pt'))
         checkpoint = torch.load(op.join(cfg['file_to_start'], 'model.pt'))
@@ -58,19 +68,22 @@ if __name__ == "__main__":
         print("Successfully loaded weights from", cfg['file_to_start'])
     else:
         print("No path for net (file_to_start)")
+        exit(0)
 
     valid_dataset = PHD08ValidDataset(cfg=cfg)
 
-    ideals = torch.zeros(11190, 25).cuda()
-    print(valid_dataset.get_alph_size())
-    with open(op.join(cfg['file_to_start'], 'ideals.json'), 'r') as json_ideal:
-        data = json.load(json_ideal)
-        for key, value in data.items():
-            ideals[int(key)] = torch.FloatTensor(value)
+    ideals = torch.zeros(len(valid_dataset.get_alphabet()), 25).cuda()
+    print('\nAlphabet size: ', len(valid_dataset.get_alphabet()))
+
+    # with open(op.join(cfg['file_to_start'], 'ideals.json'), 'r') as json_ideal:
+    #     data = json.load(json_ideal)
+    #     for key, value in data.items():
+    #         ideals[valid_dataset.get_alphabet().index(key)] = torch.FloatTensor(value)
 
     valid_loader = DataLoader(dataset=valid_dataset,
-                              batch_size=102400,  # config['minibatch_size'],
+                              batch_size=cfg['batch_settings']['elements_per_batch'],
                               shuffle=False,
                               num_workers=10)
 
-    res = validate(cfg, model, valid_loader, ideals)
+
+    # res = validate(cfg, model, valid_loader, ideals)

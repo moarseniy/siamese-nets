@@ -26,6 +26,9 @@ if __name__ == "__main__":
 
     if torch.cuda.is_available():
         print(torch.cuda.get_device_name(cfg['device']) + ' is available!')
+    else:
+        print('No GPU!!!')
+        exit(-1)
 
     model = KorNet().cuda()
 
