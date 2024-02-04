@@ -277,19 +277,21 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
         #             f'Validation Loss Decreased({min_test_loss:.6f}--->{test_loss / len(test_loader):.6f}) \t Saving The Model')
         #         min_valid_loss = test_loss
 
+        ep_save_pt = op.join(save_pt, str(e))
+        if not os.path.exists(ep_save_pt):
+            os.mkdir(ep_save_pt)
+
         if config['batch_settings']['negative_mode'] == 'auto_clusters':
             start_time = time.time()
             print('Started generation of clusters')
-            train_dataset.update_rules(ideals, save_pt, e)
+            train_dataset.update_rules(ideals, ep_save_pt)
             print('Finished generation of clusters', time.time() - start_time)
 
         print(f'Epoch {e} -> Training Loss({time.time() - start_time}s): {train_loss / len(train_loader)}')
 
         to_valid = True
         if to_valid:
-            ep_save_pt = op.join(save_pt, str(e))
-            if not os.path.exists(ep_save_pt):
-                os.mkdir(ep_save_pt)
+
             torch.save({
                 'epoch': e,
                 'model_state_dict': recognizer.state_dict(),
