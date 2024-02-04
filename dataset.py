@@ -54,23 +54,23 @@ class PHD08ValidDataset(Dataset):
         print("======= LOADING DATA(PHD08ValidDataset) =======")
         start_time = time.time()
 
-
-
-        trans1 = torchvision.transforms.ToTensor()
-        trans2 = torchvision.transforms.Resize((37, 37), antialias=False)
+        # trans1 = torchvision.transforms.ToTensor()
+        # trans2 = torchvision.transforms.Resize((37, 37), antialias=False)
 
         for class_dir in tqdm(png_data_dirs):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
-            for img_path in files:
-                image = Image.open(img_path).convert('L')
 
-                self.data.append({'img': trans2(trans1(image)),
-                                  'lbl': torch.tensor(float(class_dir))})
+            # for img_path in files:
+            #     image = Image.open(img_path).convert('L')
+            #
+            #     self.data.append({'img': trans2(trans1(image)),
+            #                       'lbl': torch.tensor(float(class_dir))})
 
             self.all_classes.extend([float(class_dir) for fi in files])
             self.all_files.extend(files)
             self.files_per_classes.append(files)
+
         print('Valid_dataset_length: ', len(self.all_files),
               '\nValid_dataset_alph_length: ', len(self.all_classes),
               '\nTime:', time.time() - start_time)
@@ -88,9 +88,14 @@ class PHD08ValidDataset(Dataset):
         #     "label": torch.tensor(self.all_classes[idx])
         # }
 
+        # sample = {
+        #     "image": self.data[idx]['img'],
+        #     "label": self.data[idx]['lbl']
+        # }
+        
         sample = {
-            "image": self.data[idx]['img'],
-            "label": self.data[idx]['lbl']
+            "image": torch.load(self.all_files[idx]),
+            "label": torch.tensor(self.all_classes[idx])
         }
 
         return sample
