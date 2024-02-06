@@ -136,11 +136,17 @@ class SiameseDataset:
         neg_c, neg_id = None, None
         if len(self.clusters) > 0:
             for cluster in self.clusters:
-                if pos_c in cluster and self.inner_imp_prob < random.random():
+                if pos_c in cluster and random.random() < self.inner_imp_prob:
                     neg_c = cluster[np.random.randint(len(cluster))]
+
                     while pos_c == neg_c:
                         neg_c = cluster[np.random.randint(len(cluster))]
                     neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
+
+                    break
+
+            if neg_c is None and neg_id is None:
+                neg_c, neg_id = self.create_negative_random(pos_c)
         else:
             neg_c, neg_id = self.create_negative_random(pos_c)
         return neg_c, neg_id
@@ -151,14 +157,13 @@ class SiameseDataset:
     def update_rules(self, ideals, ep_save_pt):
         generation_time = time.time()
         norms_res = generate_clusters(ideals, self.raw_clusters, len(self.alphabet))
-        print('Generation time:', time.time() - generation_time)
+        print('Generation time: {:.2f} sec'.format(time.time() - generation_time))
 
         merge_time = time.time()
         merge_clusters(norms_res, self.clusters)
-        print('Merge time:', time.time() - merge_time)
+        print('Merge time: {:.2f} sec'.format(time.time() - merge_time))
 
         save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
-        exit(-1)
 
 
 class PHD08Dataset(Dataset, SiameseDataset):

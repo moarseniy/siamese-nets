@@ -285,9 +285,9 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             start_time = time.time()
             print('Started generation of clusters')
             train_dataset.update_rules(ideals, ep_save_pt)
-            print('Finished generation of clusters', time.time() - start_time)
+            print('Finished generation of clusters {:.2f} sec'.format(time.time() - start_time))
 
-        print(f'Epoch {e} -> Training Loss({time.time() - start_time}s): {train_loss / len(train_loader)}')
+        print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time, train_loss / len(train_loader)))
 
         to_valid = True
         if to_valid:

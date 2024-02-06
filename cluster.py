@@ -26,7 +26,6 @@ def generate_clusters(ideals, raw_clusters, classes_count):
         _, indices = torch.topk(norms_res[:, 0], k=norms_count, largest=False)
         norms_res = norms_res[indices]
 
-    # The resulting norms_res contains the top norms_count smallest values and corresponding indices
 
     # norms_count = None
     # if raw_clusters < classes_count:
@@ -135,5 +134,5 @@ def save_clusters(out_path, clusters, alphabet):
             visible_cluster.append(alphabet[sym])
         visible_clusters.append(visible_cluster)
 
-    with open(out_path, 'w') as json_out:
-        json.dump(visible_clusters, json_out, indent=2)
+    with open(out_path, 'w', encoding='utf8') as json_out:
+        json.dump(visible_clusters, json_out, indent=2, ensure_ascii=False)
