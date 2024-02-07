@@ -6,7 +6,9 @@ import ujson as json
 
 if __name__ == "__main__":
 
-    with open("train_config.json", "r", encoding='utf8') as cfg_file:
+    config_path = "train_config_0.json"
+
+    with open(config_path, "r", encoding='utf8') as cfg_file:
         cfg = json.load(cfg_file)
 
     torch.cuda.set_device(cfg['device'])
@@ -43,7 +45,7 @@ if __name__ == "__main__":
         model.load_state_dict(checkpoint)  # ['model_state_dict'])
         print("Successfully loaded weights from", cfg['file_to_start'])
 
-    model_optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    model_optimizer = torch.optim.Adam(model.parameters(), lr=cfg['lr'])
 
     run_training(config=cfg,
                  recognizer=model,

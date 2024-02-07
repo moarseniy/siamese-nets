@@ -2,6 +2,7 @@ import os, time
 import os.path as op
 
 import torch, json
+from torchvision.utils import save_image
 from model import *
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -18,30 +19,40 @@ def validate(config, recognizer, valid_loader, descrs):
         img = mb['image'].cuda()
         lbl = mb['label'].cuda()
 
+        if idx < 10 and config['save_images']:
+            save_image(img[0], os.path.join('/home/arseniy/results/out/torch_out', 'out_valid_' + str(idx) + '.png'))
+
         data_out = recognizer(img)
 
-        min_norm = torch.empty(data_out.size()[0]).fill_(1e+10).cuda()
-        ids = torch.zeros(lbl.size()).cuda()
+        # min_norm = torch.empty(data_out.size()[0]).fill_(1e+10).cuda()
+        # ids = torch.zeros(lbl.size()).cuda()
+        #
+        # i = 0
+        # for j in range(descrs.size()[0]):
+        #     cur_norm = torch.sqrt(torch.sum((data_out - descrs[j]) ** 2, dim=1))
+        #
+        #     temp = cur_norm < min_norm
+        #     min_norm[temp] = cur_norm[temp]
+        #     ids[temp] = torch.tensor(i, dtype=torch.float).cuda()
+        #     i += 1
 
-        # print(img.size(), lbl.size(), data_out.size())
+        # Compute Euclidean distances between each vector in data_out and descrs
+        distances = torch.cdist(data_out, descrs)
 
-        i = 0
-        for j in range(descrs.size()[0]):
-            cur_norm = torch.sqrt(torch.sum((data_out - descrs[j]) ** 2, dim=1))
+        # Find the index of the closest vector in descrs for each vector in data_out
+        ids = torch.argmin(distances, dim=1)
 
-            temp = cur_norm < min_norm
-            min_norm[temp] = cur_norm[temp]
-            ids[temp] = torch.tensor(i, dtype=torch.float).cuda()
-            i += 1
+        # Optionally, you can also compute the minimum distances
+        # min_distances = torch.min(distances, dim=1).values
 
-        # print(lbl.size(), ids.size())
-        count += torch.sum(torch.tensor(lbl.detach() == ids.detach())).detach()
+        count += torch.sum((lbl == ids).clone().detach())
+
         pbar.set_description("Valid [count %d]" % count)
 
     print('\nCount: ', count,
           '\nLength: ', len(valid_loader.dataset),
           '\nAccuracy: ', 100 * count / len(valid_loader.dataset),
-          '\nTime: ', str(time.time() - start_time) + ' sec')
+          '\nTime: {:.2f} sec'.format(time.time() - start_time))
 
     return 100 * count / len(valid_loader.dataset)
 

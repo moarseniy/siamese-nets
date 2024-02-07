@@ -1,7 +1,6 @@
 import torch
 from torch import nn
-from torchvision import transforms
-
+from torchvision.transforms import v2
 
 class SymReLU(torch.nn.Module):
     def __init__(self):
@@ -22,13 +21,32 @@ class ConvAct(torch.nn.Module):
 
 
 def prepare_augmentation():
-    torch.manual_seed(17)
-    augmentation = torch.nn.Sequential(
-        transforms.RandomRotation(degrees=5),
-        transforms.RandomPerspective(),
-        # transforms.v2.RandomResize(),
+    train_transform = v2.Compose(
+        [
+            v2.RandomHorizontalFlip(0.4),
+            v2.RandomVerticalFlip(0.1),
+            v2.RandomApply(transforms=[v2.RandomRotation(degrees=(0, 90))], p=0.5),
+            v2.RandomApply(transforms=[v2.ColorJitter(brightness=0.3, hue=0.1)], p=0.3),
+            v2.RandomApply(transforms=[v2.GaussianBlur(kernel_size=(5, 9))], p=0.3),
+            # transforms.Normalize(mean = (0.485, 0.456, 0.406), std = (0.229, 0.224, 0.225))
+        ]
     )
-    return torch.jit.script(augmentation)
+
+    transforms = v2.Compose(
+        [
+            v2.RandomApply(transforms=[v2.RandomRotation(degrees=(-5, 5), fill=1)], p=0.0),
+            v2.RandomApply(transforms=[v2.Compose([
+                                        v2.RandomResize(int(37 * 0.7), int(37 * 0.9)),
+                                        v2.Resize(size=(37, 37))
+                                    ])], p=0.0),
+            v2.RandomApply(transforms=[v2.RandomPerspective(0.15, fill=1)], p=1.0)
+            # v2.RandomApply(transforms=[v2.functional.perspective(startpoints=[[0, 0], [0, 37], [37, 37], [37, 0]],
+            # 													 endpoints=[[0, 0], [0, 37], [uniRand(), 37], [uniRand(), 0]],
+            # 													 fill=1)], p=1.0)
+        ]
+    )
+
+    return transforms
 
 
 class KorNet(torch.nn.Module):

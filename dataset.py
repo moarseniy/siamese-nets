@@ -13,6 +13,7 @@ import ujson as json
 from tqdm import tqdm
 
 from torch.utils.data import Dataset
+from torchvision.utils import save_image
 from torchvision.io import read_image
 from torchvision.io import ImageReadMode
 import torchvision
@@ -73,7 +74,7 @@ class PHD08ValidDataset(Dataset):
 
         print('Valid_dataset_length: ', len(self.all_files),
               '\nValid_dataset_alph_length: ', len(self.all_classes),
-              '\nTime:', time.time() - start_time)
+              '\nTime: {:.2f} sec'.format(time.time() - start_time))
 
     def __len__(self) -> int:
         return len(self.all_files)
@@ -92,7 +93,7 @@ class PHD08ValidDataset(Dataset):
         #     "image": self.data[idx]['img'],
         #     "label": self.data[idx]['lbl']
         # }
-        
+
         sample = {
             "image": torch.load(self.all_files[idx]),
             "label": torch.tensor(self.all_classes[idx])
@@ -292,6 +293,9 @@ class KorSyntheticContrastive(Dataset, SiameseDataset):
             image = bgr * mask
             lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
 
+            if random.uniform(0, 1) < 0.7:
+                image = self.transforms(image)
+
             pair_imgs.append(image)
             pair_lbls.append(lbl)
 
@@ -364,6 +368,9 @@ class KorSyntheticTriplet(Dataset, SiameseDataset):
 
             image = bgr * mask
             lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
+
+            if random.uniform(0, 1) < 0.7:
+                image = self.transforms(image)
 
             triplet_imgs.append(image)
             triplet_lbls.append(lbl)

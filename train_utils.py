@@ -61,7 +61,9 @@ def export_fm(fm, out_pt):
 
 
 def Dataloader_by_Index(data_loader, target=0):
+    print(target)
     for index, data in enumerate(data_loader, target):
+        print(index)
         return data
     return None
 
@@ -94,15 +96,17 @@ class ContrastiveLoss(torch.nn.Module):
 
 
 def go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter):
-    pbar = tqdm(range(config["batch_settings"]["iterations"]))
-    for it in pbar:
-        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+    # pbar = tqdm(range(config["batch_settings"]["iterations"]))
+    pbar = tqdm(train_loader)
+    # for idx in pbar:
+    for idx, mb in enumerate(pbar):
+        # mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
         anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
         a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
 
         anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
 
-        if it == 0 and config["save_images"]:
+        if idx == 0 and config["save_images"]:
             save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_train' + str(e) + '.png'))
             save_image(positive[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
             save_image(negative[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
@@ -335,6 +339,11 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
                        )
             plt.grid(True)
             plt.savefig(op.join(ep_save_pt, 'graph.png'))
+
+            with open(op.join(ep_save_pt, 'info.txt'), 'w') as info_txt:
+                info_txt.write(config['description'] + '\n')
+                for el in zip(stat['epochs'], stat['acc']):
+                    info_txt.write(str(el[0]) + ' ' + str(el[1]) + '\n')
 
         if e % config["batch_settings"]["make_clust_on_ep"] == 0:
             ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
