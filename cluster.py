@@ -57,7 +57,7 @@ def generate_clusters(ideals, raw_clusters, classes_count):
     return norms_res
 
 
-def merge_clusters(norms_res, merged_clusters):
+def merge_clusters(norms_res, merged_clusters, cluster_max_size):
     # merged_clusters = []
 
     for i in tqdm(range(norms_res.size()[0])):
@@ -81,14 +81,11 @@ def merge_clusters(norms_res, merged_clusters):
         elif not found_class1 and not found_class2:
             merged_clusters.append([class1, class2])
         elif found_class1 and found_class2 and idx1 != idx2:
-            merged_clusters[idx1].extend(merged_clusters[idx2])
-            merged_clusters.pop(idx2)
+            if (len(merged_clusters[idx1]) + len(merged_clusters[idx2]))< cluster_max_size:
+                merged_clusters[idx1].extend(merged_clusters[idx2])
+                merged_clusters.pop(idx2)
 
     # return merged_clusters
-
-
-# Example usage:
-# merged_clusters = merge_clusters(norms_res, [])
 
 
 def merge_clusters111(norms_res, clusters):

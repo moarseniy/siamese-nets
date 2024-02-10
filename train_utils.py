@@ -74,8 +74,6 @@ class ContrastiveLoss(torch.nn.Module):
         self.margin = margin  # margin or radius
 
     def forward(self, output1, output2, label):
-        # d = 0 means y1 and y2 are supposed to be same
-        # d = 1 means y1 and y2 are supposed to be different
 
         euclidean_distance = torch.nn.functional.pairwise_distance(output1, output2)
         pos = (1 - label) * torch.pow(euclidean_distance, 2)
@@ -134,17 +132,19 @@ def go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_lo
 
 
 def go_contrastive_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter):
-    pbar = tqdm(range(config["batch_settings"]["iterations"]))
-    for it in pbar:
-        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+    # pbar = tqdm(range(config["batch_settings"]["iterations"]))
+    # for idx in pbar:
+    pbar = tqdm(train_loader)
+    for idx, mb in enumerate(pbar):
+        # mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
         first, second = mb['image'][0].cuda(), mb['image'][1].cuda()
         f_lbl, s_lbl = mb['label'][0].cuda(), mb['label'][1].cuda()
 
         first_out, second_out = recognizer(first), recognizer(second)
 
-        if it == 0 and config["save_images"]:
-            save_image(first[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
-            save_image(second[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
+        if idx < 10 and config["save_images"]:
+            save_image(first[idx], os.path.join(save_im_pt, str(e) + '_' + str(idx) + '_out_train_f_' + str(f_lbl[idx].item()) + '.png'))
+            save_image(second[idx], os.path.join(save_im_pt, str(e) + '_' + str(idx) + '_out_train_s_' + str(s_lbl[idx].item()) + '.png'))
 
         # save ideals
         ideals[f_lbl] += first_out.detach()
@@ -285,7 +285,8 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
         if not os.path.exists(ep_save_pt):
             os.mkdir(ep_save_pt)
 
-        if config['batch_settings']['negative_mode'] == 'auto_clusters':
+        if config['batch_settings']['negative_mode'] == 'auto_clusters' and \
+                e % config["batch_settings"]["make_clust_on_ep"] == 0:
             start_time = time.time()
             print('Started generation of clusters')
             train_dataset.update_rules(ideals, ep_save_pt)

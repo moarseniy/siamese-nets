@@ -70,3 +70,26 @@ class KorNet(torch.nn.Module):
         x = self.conv5(x)
         x = self.final(x.flatten(start_dim=1))
         return x
+
+
+class OneShotKorNet(torch.nn.Module):
+    def __init__(self):
+        super(OneShotKorNet, self).__init__()
+
+        self.conv0 = ConvAct(1, 16, (3, 3), 1, 0)
+        self.conv1 = ConvAct(16, 16, (5, 5), 2, 2)
+        self.conv2 = ConvAct(16, 16, (3, 3), 1, 1)
+        self.conv3 = ConvAct(16, 24, (5, 5), 2, 2)
+        self.conv4 = ConvAct(24, 24, (3, 3), 1, 1)
+        self.conv5 = ConvAct(24, 24, (3, 3), 1, 1)
+        self.final = nn.Linear(24 * 9 * 9, 25 * 1 * 1)
+
+    def forward(self, x):
+        x = self.conv0(x)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        x = self.conv5(x)
+        x = self.final(x.flatten(start_dim=1))
+        return x

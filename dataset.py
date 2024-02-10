@@ -161,8 +161,9 @@ class SiameseDataset:
         print('Generation time: {:.2f} sec'.format(time.time() - generation_time))
 
         merge_time = time.time()
-        merge_clusters(norms_res, self.clusters)
-        print('Merge time: {:.2f} sec'.format(time.time() - merge_time))
+        self.clusters = []
+        merge_clusters(norms_res, self.clusters, self.cluster_max_size)
+        print('Merge time: {:.2f} sec, Total clusters size: {}'.format(time.time() - merge_time, len(self.clusters)))
 
         save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
 
@@ -239,6 +240,7 @@ class KorSyntheticContrastive(Dataset, SiameseDataset):
 
         self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
+        self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
 
         self.data_dir = cfg["train_data_dir"]
 
@@ -321,6 +323,7 @@ class KorSyntheticTriplet(Dataset, SiameseDataset):
 
         self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
+        self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
 
         self.data_dir = cfg["train_data_dir"]
 
