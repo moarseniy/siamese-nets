@@ -73,7 +73,7 @@ class PHD08ValidDataset(Dataset):
             self.files_per_classes.append(files)
 
         print('Valid_dataset_length: ', len(self.all_files),
-              '\nValid_dataset_alph_length: ', len(self.all_classes),
+              '\nValid_dataset_alph_length: ', len(self.files_per_classes),
               '\nTime: {:.2f} sec'.format(time.time() - start_time))
 
     def __len__(self) -> int:

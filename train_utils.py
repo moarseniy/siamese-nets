@@ -74,14 +74,12 @@ class ContrastiveLoss(torch.nn.Module):
         self.margin = margin  # margin or radius
 
     def forward(self, output1, output2, label):
-
         euclidean_distance = torch.nn.functional.pairwise_distance(output1, output2)
         pos = (1 - label) * torch.pow(euclidean_distance, 2)
         neg = (label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)
 
         loss_contrastive = torch.mean(pos + neg)
         return loss_contrastive
-
 
         # euc_dist = torch.nn.functional.pairwise_distance(y1, y2)
         #
@@ -93,31 +91,37 @@ class ContrastiveLoss(torch.nn.Module):
         #     return torch.mean(torch.pow(delta, 2))  # mean over all rows
 
 
-def go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter):
-    # pbar = tqdm(range(config["batch_settings"]["iterations"]))
-    pbar = tqdm(train_loader)
-    # for idx in pbar:
-    for idx, mb in enumerate(pbar):
-        # mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
-        anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
-        a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
+def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter, metric_type):
+    pbar = tqdm(range(config["batch_settings"]["iterations"]))
+    for idx in pbar:
+    # pbar = tqdm(train_loader)
+    # for idx, mb in enumerate(pbar):
+        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+        size = len(mb['image'])
+        img_out, lbl_out = [None] * size, [None] * size
 
-        anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
+        for img_id in range(size):
+            img = mb['image'][img_id].cuda()
+            lbl = mb['label'][img_id].cuda()
+            out = recognizer(img)
 
-        if idx == 0 and config["save_images"]:
-            save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_train' + str(e) + '.png'))
-            save_image(positive[0], os.path.join(save_im_pt, 'out_pos_train' + str(e) + '.png'))
-            save_image(negative[0], os.path.join(save_im_pt, 'out_neg_train' + str(e) + '.png'))
+            img_out[img_id] = out
+            lbl_out[img_id] = lbl
 
-        # save ideals
-        ideals[a_lbl] += anchor_out.detach()
-        ideals[p_lbl] += positive_out.detach()
-        ideals[n_lbl] += negative_out.detach()
-        counter[a_lbl] += 1
-        counter[p_lbl] += 1
-        counter[n_lbl] += 1
+            if idx <= 10 and config["save_images"]:
+                save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
+                                                str(int(lbl[0])) + '_' + str(e) + '.png'))
 
-        cur_loss = loss(anchor_out, positive_out, negative_out)
+            ideals[lbl] += out.detach()
+            counter[lbl] += 1
+
+        if metric_type == "triplet":
+            cur_loss = loss(img_out[0], img_out[1], img_out[2])
+        elif metric_type == "contrastive":
+            cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
+        else:
+            print('No type!')
+            exit(-1)
 
         optimizer.zero_grad()
         cur_loss.backward()
@@ -131,74 +135,33 @@ def go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_lo
     return train_loss
 
 
-def go_contrastive_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter):
-    # pbar = tqdm(range(config["batch_settings"]["iterations"]))
-    # for idx in pbar:
-    pbar = tqdm(train_loader)
-    for idx, mb in enumerate(pbar):
-        # mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
-        first, second = mb['image'][0].cuda(), mb['image'][1].cuda()
-        f_lbl, s_lbl = mb['label'][0].cuda(), mb['label'][1].cuda()
-
-        first_out, second_out = recognizer(first), recognizer(second)
-
-        if idx < 10 and config["save_images"]:
-            save_image(first[idx], os.path.join(save_im_pt, str(e) + '_' + str(idx) + '_out_train_f_' + str(f_lbl[idx].item()) + '.png'))
-            save_image(second[idx], os.path.join(save_im_pt, str(e) + '_' + str(idx) + '_out_train_s_' + str(s_lbl[idx].item()) + '.png'))
-
-        # save ideals
-        ideals[f_lbl] += first_out.detach()
-        ideals[s_lbl] += second_out.detach()
-        counter[f_lbl] += 1
-        counter[s_lbl] += 1
-
-        cur_loss = loss(first_out, second_out, (f_lbl == s_lbl).long())
-
-        optimizer.zero_grad()
-        cur_loss.backward()
-        optimizer.step()
-
-        train_loss += cur_loss.item()
-
-        pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
-
-    return train_loss
-
-
-def go_triplet_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e):
+def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e, metric_type):
     # recognizer.eval()
     pbar = tqdm(range(config["batch_settings"]["iterations"]))
     for it in pbar:
         mb = test_loader[torch.randint(len(test_loader), size=(1,)).item()]
-        anchor, positive, negative = mb['image'][0].cuda(), mb['image'][1].cuda(), mb['image'][2].cuda()
+        size = len(mb['image'])
+        img_out, lbl_out = [None] * size, [None] * size
 
-        anchor_out, positive_out, negative_out = recognizer(anchor), recognizer(positive), recognizer(negative)
-        a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
-        if it == 0 and config["save_images"]:
-            save_image(anchor[0], os.path.join(save_im_pt, 'out_anc_test' + str(e) + '.png'))
-            save_image(positive[0], os.path.join(save_im_pt, 'out_pos_test' + str(e) + '.png'))
-            save_image(negative[0], os.path.join(save_im_pt, 'out_neg_test' + str(e) + '.png'))
+        for img_id in range(size):
+            img = mb['image'][img_id].cuda()
+            lbl = mb['label'][img_id].cuda()
+            out = recognizer(img)
 
-        cur_loss = loss(anchor_out, positive_out, negative_out)
+            img_out[img_id] = out
+            lbl_out[img_id] = lbl
 
-        test_loss += cur_loss.item()
-        pbar.set_description("epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
+            if it == 0 and config["save_images"]:
+                save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_test_' +
+                                                str(int(lbl[0])) + '_' + str(e) + '.png'))
 
-
-def go_contrastive_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e):
-    # recognizer.eval()
-    pbar = tqdm(range(config["batch_settings"]["iterations"]))
-    for it in pbar:
-        mb = test_loader[torch.randint(len(test_loader), size=(1,)).item()]
-        first, second = mb['image'][0].cuda(), mb['image'][1].cuda()
-
-        first_out, second_out = recognizer(first), recognizer(second)
-        a_lbl, p_lbl, n_lbl = mb['label'][0].cuda(), mb['label'][1].cuda(), mb['label'][2].cuda()
-        if it == 0 and config["save_images"]:
-            save_image(first[0], os.path.join(save_im_pt, 'out_first_test' + str(e) + '.png'))
-            save_image(second[0], os.path.join(save_im_pt, 'out_second_test' + str(e) + '.png'))
-
-        cur_loss = loss(first_out, second_out)
+        if metric_type == "triplet":
+            cur_loss = loss(img_out[0], img_out[1], img_out[2])
+        elif metric_type == "contrastive":
+            cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
+        else:
+            print('No type!')
+            exit(-1)
 
         test_loss += cur_loss.item()
         pbar.set_description("epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
@@ -257,28 +220,23 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
         train_loss = 0.0
         start_time = time.time()
-        if metric_type == 'triplet':
-            train_loss = go_triplet_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
-                                          ideals,
-                                          counter)
-        elif metric_type == 'contrastive':
-            train_loss = go_contrastive_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt,
-                                              e, ideals,
-                                              counter)
+        train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
+                                      ideals,
+                                      counter, metric_type)
 
         ideals = torch.div(ideals.T, counter).T
 
-        # test_loss = 0.0
-        # to_test = False
+        test_loss = 0.0
+        to_test = True
         # if to_test:
-        #     go_test()
+        #     go_metric_test(valid_loader, config, recognizer, loss, train_loss, save_im_pt, e, metric_type)
         #
         #     print(
-        #         f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)} \t\t Validation Loss: {test_loss / len(test_loader)}')
+        #         f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)} \t\t Validation Loss: {test_loss / len(valid_loader)}')
         #
         #     if min_test_loss > test_loss:
         #         print(
-        #             f'Validation Loss Decreased({min_test_loss:.6f}--->{test_loss / len(test_loader):.6f}) \t Saving The Model')
+        #             f'Validation Loss Decreased({min_test_loss:.6f}--->{test_loss / len(valid_loader):.6f}) \t Saving The Model')
         #         min_valid_loss = test_loss
 
         ep_save_pt = op.join(save_pt, str(e))
@@ -292,7 +250,8 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             train_dataset.update_rules(ideals, ep_save_pt)
             print('Finished generation of clusters {:.2f} sec'.format(time.time() - start_time))
 
-        print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time, train_loss / len(train_loader)))
+        print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
+                                                                 train_loss / len(train_loader)))
 
         to_valid = True
         if to_valid:
