@@ -3,6 +3,16 @@ from torch import nn
 from torchvision.transforms import v2
 
 
+def ChooseModel(model_name: str):
+    if model_name == "KorNet":
+        return KorNet.cuda()
+    elif model_name == "OneShotNet":
+        return OneShotNet.cuda()
+    else:
+        print("Model is not defined!!!")
+        exit(-1)
+
+
 class SymReLU(torch.nn.Module):
     def __init__(self):
         super(SymReLU, self).__init__()

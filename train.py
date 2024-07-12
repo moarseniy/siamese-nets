@@ -1,4 +1,4 @@
-from dataset import KorSyntheticTriplet, KorSyntheticContrastive, PHD08Dataset, PHD08ValidDataset
+from dataset import ChooseDataset
 from model import *
 from train_utils import prepare_dirs, run_training
 from eval_model import validate
@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     # test_dataset = PHD08Dataset(cfg=cfg)
 
-    valid_dataset = PHD08ValidDataset(cfg=cfg)
+    # valid_dataset = PHD08ValidDataset(cfg=cfg)
 
     torch.cuda.set_device(cfg['device'])
     if torch.cuda.is_available():
