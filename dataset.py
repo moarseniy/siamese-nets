@@ -25,6 +25,16 @@ from cluster import merge_clusters
 from cluster import save_clusters
 
 
+def ChooseDataset(dataset_name: str, cfg: dict, transforms: torchvision.transforms) -> Dataset:
+    if cfg[dataset_name] == "KorSynthetic":
+        return KorSyntheticContrastive(cfg=cfg, transforms=transforms)
+    elif cfg[dataset_name] == "Omniglot":
+        return Omniglot(cfg=cfg, transforms=transforms)
+    else:
+        print("Dataset name is not defined!!!")
+        exit(-1)
+
+
 def prepare_alph_old(alph_pt: str) -> list:
     alphabet = []
     for a in json.load(open(alph_pt, "r"))["alphabet"]:
@@ -167,7 +177,9 @@ class SiameseDataset:
 
         save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
 
-
+class TripletDataset(SiameseDataset):
+    def __init__(self, *args):
+        super().__init__(*args)
 class PHD08Dataset(Dataset, SiameseDataset):
     def __init__(self, cfg: dict):
         self.type = cfg['batch_settings']['type']
@@ -226,6 +238,91 @@ class PHD08Dataset(Dataset, SiameseDataset):
         }
 
         return sample
+
+
+class Omniglot(Dataset, SiameseDataset):
+    def __init__(self, cfg: dict, transforms):
+        super().__init__()
+        self.transforms = transforms
+
+        self.type = cfg['batch_settings']['type']
+        self.positive_mode = cfg['batch_settings']['positive_mode']
+        self.negative_mode = cfg['batch_settings']['negative_mode']
+        self.gen_imp_ratio = cfg['batch_settings']['gen_imp_ratio']
+        self.clusters = []
+
+        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
+        self.raw_clusters = cfg['batch_settings']['raw_clusters']
+        self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
+
+        self.data_dir = cfg["train_data_dir"]
+
+        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+
+        self.all_files, self.files_per_classes = [], []
+        print("======= LOADING DATA(KorSyntheticContrastive) =======")
+        for class_dir in os.listdir(self.data_dir):
+            files = os.listdir(op.join(self.data_dir, class_dir))
+            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
+            self.files_per_classes.append(files)
+            self.all_files.extend(files)
+        print('Train_dataset_length: ', len(self.files_per_classes), len(self.all_files))
+        assert len(self.alphabet) == len(self.files_per_classes)
+
+    def __len__(self) -> int:
+        return len(self.all_files)
+
+    def __getitem__(self, idx: int) -> dict:
+        pair_ids = None
+        if random.uniform(0, 1) < self.gen_imp_ratio:
+            pos_c, pos_id1 = self.choose_positive_random()
+
+            pos_id2 = self.create_positive(pos_c, pos_id1)
+
+            pair_ids = [[pos_c, pos_id1], [pos_c, pos_id2]]
+        else:
+            pos_c, pos_id = self.choose_positive_random()
+
+            neg_c, neg_id = None, None
+            if self.negative_mode == "auto_clusters":
+                neg_c, neg_id = self.create_negative_clusters(pos_c)
+            else:
+                neg_c, neg_id = self.create_negative_random(pos_c)
+
+            pair_ids = [[pos_c, pos_id], [neg_c, neg_id]]
+
+        pair_imgs, pair_lbls = [], []
+        for pair_id in pair_ids:
+            c, i = pair_id[0], pair_id[1]
+            file = self.files_per_classes[c][i]
+            with open(file, "r") as data_f:
+                data = json.load(data_f)
+                mask = torch.tensor(data[1]["data"]).reshape(1, 37, 37)
+
+            bgr_idx = np.random.randint(len(self.all_files))
+            bgr_file = self.all_files[bgr_idx]
+            with open(bgr_file, "r") as data_f:
+                bgr_data = json.load(data_f)
+                bgr = torch.tensor(bgr_data[0]["data"]).reshape(1, 37, 37)
+
+            image = bgr * mask
+            lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
+
+            if random.uniform(0, 1) < 0.7:
+                image = self.transforms(image)
+
+            pair_imgs.append(image)
+            pair_lbls.append(lbl)
+
+        sample = {
+            "image": pair_imgs,
+            "label": pair_lbls
+        }
+
+        return sample
+
+    def get_alph(self) -> list:
+        return self.alphabet
 
 
 class KorSyntheticContrastive(Dataset, SiameseDataset):

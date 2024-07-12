@@ -11,29 +11,30 @@ if __name__ == "__main__":
     with open(config_path, "r", encoding='utf8') as cfg_file:
         cfg = json.load(cfg_file)
 
-    torch.cuda.set_device(cfg['device'])
-
     save_pt, save_im_pt = prepare_dirs(cfg)
 
     transforms = prepare_augmentation()
     train_dataset, test_dataset = None, None
-    if cfg['batch_settings']['type'] == 'triplet':
-        train_dataset = KorSyntheticTriplet(cfg=cfg, transforms=transforms)
-    elif cfg['batch_settings']['type'] == 'contrastive':
-        train_dataset = KorSyntheticContrastive(cfg=cfg, transforms=transforms)
+
+    train_dataset = ChooseDataset(cfg, transforms)
+    # if cfg['batch_settings']['type'] == 'triplet':
+    #     train_dataset = KorSyntheticTriplet(cfg=cfg, transforms=transforms)
+    # elif cfg['batch_settings']['type'] == 'contrastive':
+    #     train_dataset = KorSyntheticContrastive(cfg=cfg, transforms=transforms)
 
     # test_dataset = PHD08Dataset(cfg=cfg)
 
     valid_dataset = PHD08ValidDataset(cfg=cfg)
 
+    torch.cuda.set_device(cfg['device'])
     if torch.cuda.is_available():
         print(torch.cuda.get_device_name(cfg['device']) + ' is available!')
     else:
         print('No GPU!!!')
         exit(-1)
 
-    model = KorNet().cuda()
-
+    model = ChooseModel(cfg["model_name"])
+    # model = KorNet().cuda()
     # model.summary()
 
     start_ep = 0
