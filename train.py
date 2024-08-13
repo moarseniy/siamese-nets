@@ -14,16 +14,18 @@ if __name__ == "__main__":
     save_pt, save_im_pt = prepare_dirs(cfg)
 
     transforms = prepare_augmentation()
-    train_dataset, test_dataset = None, None
 
-    train_dataset = ChooseDataset(cfg, transforms)
+    train_dataset = ChooseDataset("train_data", cfg, transforms)
+    valid_dataset = ChooseDataset("valid_data", cfg, transforms)
+    test_dataset = None
+
+    # train_dataset, test_dataset = None, None
     # if cfg['batch_settings']['type'] == 'triplet':
     #     train_dataset = KorSyntheticTriplet(cfg=cfg, transforms=transforms)
     # elif cfg['batch_settings']['type'] == 'contrastive':
     #     train_dataset = KorSyntheticContrastive(cfg=cfg, transforms=transforms)
 
     # test_dataset = PHD08Dataset(cfg=cfg)
-
     # valid_dataset = PHD08ValidDataset(cfg=cfg)
 
     torch.cuda.set_device(cfg['device'])

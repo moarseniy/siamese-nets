@@ -61,9 +61,7 @@ def export_fm(fm, out_pt):
 
 
 def Dataloader_by_Index(data_loader, target=0):
-    print(target)
     for index, data in enumerate(data_loader, target):
-        print(index)
         return data
     return None
 
@@ -92,11 +90,13 @@ class ContrastiveLoss(torch.nn.Module):
 
 
 def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter, metric_type):
-    pbar = tqdm(range(config["batch_settings"]["iterations"]))
-    for idx in pbar:
-    # pbar = tqdm(train_loader)
-    # for idx, mb in enumerate(pbar):
-        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+    # pbar = tqdm(range(config["batch_settings"]["iterations"]))
+    # for idx in pbar:
+
+    pbar = tqdm(train_loader)
+    for idx, mb in enumerate(pbar):
+
+    #     mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
         size = len(mb['image'])
         img_out, lbl_out = [None] * size, [None] * size
 

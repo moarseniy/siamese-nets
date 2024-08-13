@@ -3,16 +3,6 @@ from torch import nn
 from torchvision.transforms import v2
 
 
-def ChooseModel(model_name: str):
-    if model_name == "KorNet":
-        return KorNet.cuda()
-    elif model_name == "OneShotNet":
-        return OneShotNet.cuda()
-    else:
-        print("Model is not defined!!!")
-        exit(-1)
-
-
 class SymReLU(torch.nn.Module):
     def __init__(self):
         super(SymReLU, self).__init__()
@@ -178,3 +168,13 @@ class OneShotNet(nn.Module):
         # return scores (without sigmoid) and use bce_with_logit
         # for increased numerical stability
         return scores
+
+
+def ChooseModel(model_name: str):
+    if model_name == "KorNet":
+        return KorNet().cuda()
+    elif model_name == "OneShotNet":
+        return OneShotNet().cuda()
+    else:
+        print("Model is not defined!!!")
+        exit(-1)

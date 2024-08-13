@@ -10,7 +10,54 @@ from dataset import PHD08Dataset
 from dataset import PHD08ValidDataset
 
 
-def validate(config, recognizer, valid_loader, descrs):
+def validate_with_descrs(config, recognizer, valid_loader, descrs):
+    start_time = time.time()
+    pbar = tqdm(valid_loader)
+
+    count = 0  # torch.zeros(valid_dataset.get_alph_size()).cuda()
+    for idx, mb in enumerate(pbar):
+        img = mb['image'].cuda()
+        lbl = mb['label'].cuda()
+
+        if idx < 10 and config['save_images']:
+            save_image(img[0], os.path.join('/home/arseniy/results/out/torch_out', 'out_valid_' + str(idx) + '.png'))
+
+        data_out = recognizer(img)
+
+        # min_norm = torch.empty(data_out.size()[0]).fill_(1e+10).cuda()
+        # ids = torch.zeros(lbl.size()).cuda()
+        #
+        # i = 0
+        # for j in range(descrs.size()[0]):
+        #     cur_norm = torch.sqrt(torch.sum((data_out - descrs[j]) ** 2, dim=1))
+        #
+        #     temp = cur_norm < min_norm
+        #     min_norm[temp] = cur_norm[temp]
+        #     ids[temp] = torch.tensor(i, dtype=torch.float).cuda()
+        #     i += 1
+
+        # Compute Euclidean distances between each vector in data_out and descrs
+        distances = torch.cdist(data_out, descrs)
+
+        # Find the index of the closest vector in descrs for each vector in data_out
+        ids = torch.argmin(distances, dim=1)
+
+        # Optionally, you can also compute the minimum distances
+        # min_distances = torch.min(distances, dim=1).values
+
+        count += torch.sum((lbl == ids).clone().detach())
+
+        pbar.set_description("Valid [count %d]" % count)
+
+    print('\nCount: ', count,
+          '\nLength: ', len(valid_loader.dataset),
+          '\nAccuracy: ', 100 * count / len(valid_loader.dataset),
+          '\nTime: {:.2f} sec'.format(time.time() - start_time))
+
+    return 100 * count / len(valid_loader.dataset)
+
+
+def validate_oneshot(config, recognizer, valid_loader):
     start_time = time.time()
     pbar = tqdm(valid_loader)
 
@@ -95,6 +142,5 @@ if __name__ == "__main__":
                               batch_size=cfg['batch_settings']['elements_per_batch'],
                               shuffle=False,
                               num_workers=10)
-
 
     # res = validate(cfg, model, valid_loader, ideals)

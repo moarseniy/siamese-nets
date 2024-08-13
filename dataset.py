@@ -25,20 +25,20 @@ from cluster import merge_clusters
 from cluster import save_clusters
 
 
-def ChooseDataset(dataset_name: str, cfg: dict, transforms: torchvision.transforms) -> Dataset:
+def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transforms) -> Dataset:
     mode = cfg['batch_settings']['type']
-    if cfg[dataset_name] == "KorSynthetic":
+    if cfg[dataset_type]["name"] == "KorSynthetic":
         if mode == 'triplet':
-            return KorSyntheticTriplet(cfg=cfg, transforms=transforms)
+            return KorSyntheticTriplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
         elif mode == 'contrastive':
-            return KorSyntheticContrastive(cfg=cfg, transforms=transforms)
-    elif cfg[dataset_name] == "Omniglot":
+            return KorSyntheticContrastive(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
+    elif cfg[dataset_type]["name"] == "Omniglot":
         if mode == 'triplet':
-            return OmniglotTriplet(cfg=cfg, transforms=transforms)
+            return OmniglotTriplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
         # elif mode == 'contrastive':
         #     return OmniglotContrastive(cfg=cfg, transforms=transforms)
-    elif cfg[dataset_name] == "PHD08ValidDataset":
-        return PHD08ValidDataset(cfg=cfg)
+    elif cfg[dataset_type]["name"] == "PHD08ValidDataset":
+        return PHD08ValidDataset(dataset_type=dataset_type, cfg=cfg)
     else:
         print("Dataset name is not defined!!!")
         exit(-1)
@@ -57,13 +57,12 @@ def prepare_alph(alph_pt: str) -> (list, dict):
     alph = [i[0] for i in alph[0]]
     # alph.append("NONE")
     alph_dict = {alph[i]: i for i in range(len(alph))}
-    # print(alph_dict)
     return alph, alph_dict
 
 
 class PHD08ValidDataset(Dataset):
-    def __init__(self, cfg: dict):
-        self.data_dir = cfg['valid_data_dir']
+    def __init__(self, dataset_type: str, cfg: dict):
+        self.data_dir = cfg[dataset_type]['path']
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         png_data_dirs = os.listdir(self.data_dir)
@@ -233,7 +232,7 @@ class TripletDataset(SiameseDataset):
 
 
 class PHD08Dataset(Dataset, SiameseDataset):
-    def __init__(self, cfg: dict):
+    def __init__(self, dataset_type:str, cfg: dict):
         super().__init__()
         self.type = cfg['batch_settings']['type']
         self.positive_mode = cfg['batch_settings']['positive_mode']
@@ -243,7 +242,7 @@ class PHD08Dataset(Dataset, SiameseDataset):
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
         self.clusters = []
 
-        self.data_dir = cfg['valid_data_dir']
+        self.data_dir = cfg[dataset_type]['path']
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files = []
@@ -258,7 +257,7 @@ class PHD08Dataset(Dataset, SiameseDataset):
 
 
 class OmniglotTriplet(Dataset, TripletDataset):
-    def __init__(self, cfg: dict, transforms):
+    def __init__(self, dataset_type: str, cfg: dict, transforms):
         super().__init__()
         self.transforms = transforms
 
@@ -272,19 +271,21 @@ class OmniglotTriplet(Dataset, TripletDataset):
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
         self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
 
-        self.data_dir = cfg["train_data_dir"]
+        self.data_dir = cfg[dataset_type]['path']
 
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files, self.files_per_classes = [], []
         print("======= LOADING DATA(OmniglotTriplet) =======")
-        for class_dir in os.listdir(self.data_dir):
-            files = os.listdir(op.join(self.data_dir, class_dir))
-            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
-            self.files_per_classes.append(files)
-            self.all_files.extend(files)
+        for sub_dir in os.listdir(self.data_dir):
+            for class_dir in os.listdir(op.join(self.data_dir, sub_dir)):
+                files = os.listdir(op.join(self.data_dir, sub_dir, class_dir))
+                files = [op.join(self.data_dir, sub_dir, class_dir, fi) for fi in files]
+
+                self.files_per_classes.append(files)
+                self.all_files.extend(files)
         print('OmniglotTriplet_dataset_length: ', len(self.files_per_classes), len(self.all_files))
-        assert len(self.alphabet) == len(self.files_per_classes)
+        # assert len(self.alphabet) == len(self.files_per_classes)
 
     def __getitem__(self, idx: int) -> dict:
         triplet_ids = self.generateTriplets()
@@ -299,7 +300,6 @@ class OmniglotTriplet(Dataset, TripletDataset):
             trans1 = torchvision.transforms.ToTensor()
             transform = torchvision.transforms.Resize((37, 37))
 
-            # print(image.size())
             triplet_imgs.append(transform(trans1(image)))
             triplet_lbls.append(torch.tensor(c))
 
@@ -318,7 +318,7 @@ class OmniglotTriplet(Dataset, TripletDataset):
 
 
 class KorSyntheticContrastive(Dataset, PairDataset):
-    def __init__(self, cfg: dict, transforms):
+    def __init__(self, dataset_type: str, cfg: dict, transforms):
         super().__init__()
         self.transforms = transforms
 
@@ -332,7 +332,7 @@ class KorSyntheticContrastive(Dataset, PairDataset):
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
         self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
 
-        self.data_dir = cfg["train_data_dir"]
+        self.data_dir = cfg[dataset_type]['path']
 
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
@@ -387,7 +387,7 @@ class KorSyntheticContrastive(Dataset, PairDataset):
 
 
 class KorSyntheticTriplet(Dataset, TripletDataset):
-    def __init__(self, cfg: dict, transforms):
+    def __init__(self, dataset_type: str, cfg: dict, transforms):
         super().__init__()
         self.transforms = transforms
 
@@ -400,7 +400,7 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
         self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
 
-        self.data_dir = cfg["train_data_dir"]
+        self.data_dir = cfg[dataset_type]["path"]
 
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
