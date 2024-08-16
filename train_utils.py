@@ -12,7 +12,7 @@ import numpy as np
 from torch import nn
 import torchvision
 from torchvision.utils import save_image
-from eval_model import validate
+from eval_model import *
 
 
 def _g(w, h, x, y, c, n, i):
@@ -174,13 +174,13 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
                               shuffle=True,
                               num_workers=10)
 
-    # test_loader = DataLoader(dataset=test_dataset,
-    #                           batch_size=1024,
-    #                           shuffle=True,
-    #                           num_workers=10)
+    test_loader = DataLoader(dataset=test_dataset,
+                              batch_size=config['batch_settings']['elements_per_batch'],
+                              shuffle=True,
+                              num_workers=10)
 
     valid_loader = DataLoader(dataset=valid_dataset,
-                              batch_size=config['batch_settings']['elements_per_batch'],  # config['minibatch_size'],
+                              batch_size=1,  # config['minibatch_size'],
                               shuffle=False,
                               num_workers=10)
 
@@ -278,16 +278,19 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             stat['train_losses'].append(train_loss / len(train_loader))
             # stat['valid_losses'].append(test_loss / len(test_loader))
 
-            acc = validate(config, recognizer, valid_loader, ideals)
-
+            # acc = validate_with_descrs(config, recognizer, valid_loader, ideals)
+            acc = validate_oneshot(config, recognizer, valid_loader)
             stat['acc'].append(acc.item())
+
+            best_id = stat['acc'].index(max(stat['acc']))
 
             plt.figure(figsize=(12, 7))
             plt.xlabel("Epoch", fontsize=18)
 
             # plt.plot(stat['epochs'], stat['train_losses'], 'o-', label='train loss', ms=4)  # , alpha=0.7, label='0.01', lw=5, mec='b', mew=1, ms=7)
             # plt.plot(stat['epochs'], stat['valid_losses'], 'o-.', label='valid loss', ms=4)  # , alpha=0.7, label='0.1', lw=5, mec='b', mew=1, ms=7)
-            plt.plot(stat['epochs'], stat['acc'], 'o--', label='Max accuracy:' + str(max(stat['acc'])),
+            plt.plot(stat['epochs'], stat['acc'], 'o--',
+                     label='Max accuracy:' + str(stat['acc'][best_id]) + '\nEpoch:' + str(stat['epochs'][best_id]),
                      ms=4)  # , alpha=0.7, label='0.3', lw=5, mec='b', mew=1, ms=7)
 
             plt.legend(fontsize=18,

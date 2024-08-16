@@ -30,13 +30,15 @@ def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transfor
     if cfg[dataset_type]["name"] == "KorSynthetic":
         if mode == 'triplet':
             return KorSyntheticTriplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
-        elif mode == 'contrastive':
-            return KorSyntheticContrastive(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
+        elif mode == 'pair':
+            return KorSyntheticPair(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
     elif cfg[dataset_type]["name"] == "Omniglot":
         if mode == 'triplet':
             return OmniglotTriplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
-        # elif mode == 'contrastive':
-        #     return OmniglotContrastive(cfg=cfg, transforms=transforms)
+        elif mode == 'pair':
+            return OmniglotPair(cfg=cfg, transforms=transforms)
+    elif cfg[dataset_type]["name"] == "OmniglotOneShot":
+        return OmniglotOneShot(dataset_type=dataset_type, cfg=cfg)
     elif cfg[dataset_type]["name"] == "PHD08ValidDataset":
         return PHD08ValidDataset(dataset_type=dataset_type, cfg=cfg)
     else:
@@ -58,75 +60,6 @@ def prepare_alph(alph_pt: str) -> (list, dict):
     # alph.append("NONE")
     alph_dict = {alph[i]: i for i in range(len(alph))}
     return alph, alph_dict
-
-
-class PHD08ValidDataset(Dataset):
-    def __init__(self, dataset_type: str, cfg: dict):
-        self.data_dir = cfg[dataset_type]['path']
-        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
-
-        png_data_dirs = os.listdir(self.data_dir)
-        self.all_files, self.all_classes = [], []
-        self.files_per_classes = []
-        self.data = []
-
-        print("======= LOADING DATA(PHD08ValidDataset) =======")
-        start_time = time.time()
-
-        # trans1 = torchvision.transforms.ToTensor()
-        # trans2 = torchvision.transforms.Resize((37, 37), antialias=False)
-
-        for class_dir in tqdm(png_data_dirs):
-            files = os.listdir(op.join(self.data_dir, class_dir))
-            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
-
-            # for img_path in files:
-            #     image = Image.open(img_path).convert('L')
-            #
-            #     self.data.append({'img': trans2(trans1(image)),
-            #                       'lbl': torch.tensor(float(class_dir))})
-
-            self.all_classes.extend([float(class_dir) for fi in files])
-            self.all_files.extend(files)
-            self.files_per_classes.append(files)
-
-        print('Valid_dataset_length: ', len(self.all_files),
-              '\nValid_dataset_alph_length: ', len(self.files_per_classes),
-              '\nTime: {:.2f} sec'.format(time.time() - start_time))
-
-    def __len__(self) -> int:
-        return len(self.all_files)
-
-    def __getitem__(self, idx: int) -> dict:
-        # image = Image.open(self.all_files[idx]).convert('L')
-        # trans1 = torchvision.transforms.ToTensor()
-        # transform = torchvision.transforms.Resize((37, 37))
-        #
-        # sample = {
-        #     "image": transform(trans1(image)),
-        #     "label": torch.tensor(self.all_classes[idx])
-        # }
-
-        # sample = {
-        #     "image": self.data[idx]['img'],
-        #     "label": self.data[idx]['lbl']
-        # }
-
-        sample = {
-            "image": torch.load(self.all_files[idx]),
-            "label": torch.tensor(self.all_classes[idx])
-        }
-
-        return sample
-
-    def get_alph_size(self) -> int:
-        return len(self.files_per_classes)
-
-    def get_alphabet(self) -> list:
-        return self.alphabet
-
-    def get_alph_dict(self) -> dict:
-        return self.alph_dict
 
 
 class SiameseDataset:
@@ -232,7 +165,7 @@ class TripletDataset(SiameseDataset):
 
 
 class PHD08Dataset(Dataset, SiameseDataset):
-    def __init__(self, dataset_type:str, cfg: dict):
+    def __init__(self, dataset_type: str, cfg: dict):
         super().__init__()
         self.type = cfg['batch_settings']['type']
         self.positive_mode = cfg['batch_settings']['positive_mode']
@@ -254,6 +187,210 @@ class PHD08Dataset(Dataset, SiameseDataset):
             self.files_per_classes.append(files)
             self.all_files.extend(files)
         print('Valid_dataset_length: ', len(self.files_per_classes), len(self.all_files))
+
+
+class PHD08ValidDataset(Dataset):
+    def __init__(self, dataset_type: str, cfg: dict):
+        self.data_dir = cfg[dataset_type]['path']
+        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+
+        png_data_dirs = os.listdir(self.data_dir)
+        self.all_files, self.all_classes = [], []
+        self.files_per_classes = []
+        self.data = []
+
+        print("======= LOADING DATA(PHD08ValidDataset) =======")
+        start_time = time.time()
+
+        # trans1 = torchvision.transforms.ToTensor()
+        # trans2 = torchvision.transforms.Resize((37, 37), antialias=False)
+
+        for class_dir in tqdm(png_data_dirs):
+            files = os.listdir(op.join(self.data_dir, class_dir))
+            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
+
+            # for img_path in files:
+            #     image = Image.open(img_path).convert('L')
+            #
+            #     self.data.append({'img': trans2(trans1(image)),
+            #                       'lbl': torch.tensor(float(class_dir))})
+
+            self.all_classes.extend([float(class_dir) for fi in files])
+            self.all_files.extend(files)
+            self.files_per_classes.append(files)
+
+        print('Valid_dataset_length: ', len(self.all_files),
+              '\nValid_dataset_alph_length: ', len(self.files_per_classes),
+              '\nTime: {:.2f} sec'.format(time.time() - start_time))
+
+    def __len__(self) -> int:
+        return len(self.all_files)
+
+    def __getitem__(self, idx: int) -> dict:
+        # image = Image.open(self.all_files[idx]).convert('L')
+        # trans1 = torchvision.transforms.ToTensor()
+        # transform = torchvision.transforms.Resize((37, 37))
+        #
+        # sample = {
+        #     "image": transform(trans1(image)),
+        #     "label": torch.tensor(self.all_classes[idx])
+        # }
+
+        # sample = {
+        #     "image": self.data[idx]['img'],
+        #     "label": self.data[idx]['lbl']
+        # }
+
+        sample = {
+            "image": torch.load(self.all_files[idx]),
+            "label": torch.tensor(self.all_classes[idx])
+        }
+
+        return sample
+
+    def get_alph_size(self) -> int:
+        return len(self.files_per_classes)
+
+    def get_alphabet(self) -> list:
+        return self.alphabet
+
+    def get_alph_dict(self) -> dict:
+        return self.alph_dict
+
+
+class OmniglotOneShot(Dataset):
+    def __init__(self, dataset_type: str, cfg: dict):
+        self.data_dir = cfg[dataset_type]['path']
+        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+
+        self.all_files_train, self.all_files_test = [], []
+        self.all_classes = []
+        self.data = []
+
+        print("======= LOADING DATA(OmniglotOneShot) =======")
+        start_time = time.time()
+
+        for folder in tqdm(os.listdir(self.data_dir)):
+
+            files_training = os.listdir(op.join(self.data_dir, folder, 'training'))
+            files_test = os.listdir(op.join(self.data_dir, folder, 'test'))
+
+            classes = []
+            with open(op.join(self.data_dir, folder, 'class_labels.txt'), 'r') as f_in:
+                lines = f_in.readlines()
+                for line in lines:
+                    first, second = line.split(' ')
+                    num_test = int(first[15:17])
+                    num_train = int(second[20:22])
+                    # print(num_test, num_train)
+                    classes.append(num_train - 1)
+
+            transform = torchvision.transforms.Compose([
+                torchvision.transforms.ToTensor(),
+                torchvision.transforms.Resize((37, 37))
+            ])
+
+            files_training = [transform(Image.open(op.join(self.data_dir, folder, 'training', fi)).convert('L')) for fi
+                              in files_training]
+            files_test = [transform(Image.open(op.join(self.data_dir, folder, 'test', fi)).convert('L')) for fi
+                          in files_test]
+
+            self.all_files_train.append(files_training)
+            self.all_files_test.append(files_test)
+            self.all_classes.append(classes)
+
+        print('OmniglotOneShot_length: ', len(self.all_files_test),
+              '\nValid_dataset_alph_length: ', len(self.alph_dict),
+              '\nTime: {:.2f} sec'.format(time.time() - start_time))
+
+    def __len__(self) -> int:
+        return len(self.all_files_test)
+
+    def __getitem__(self, idx: int) -> dict:
+
+        # print(len(self.all_files_test), type(self.all_files_test[0]), len(self.all_files_test[0]), self.all_files_test[0][0].size())
+        # print(torch.stack(self.all_files_test[0]).size())
+
+        # print(self.all_classes[0])
+
+        sample = {
+            "test": torch.stack(self.all_files_test[idx]),
+            "train": torch.stack(self.all_files_train[idx]),
+            "lbl": torch.tensor(self.all_classes[idx])
+        }
+
+        return sample
+
+
+class OmniglotPair(Dataset, PairDataset):
+    def __init__(self, dataset_type: str, cfg: dict, transforms):
+        super().__init__()
+        self.transforms = transforms
+
+        self.type = cfg['batch_settings']['type']
+        self.positive_mode = cfg['batch_settings']['positive_mode']
+        self.negative_mode = cfg['batch_settings']['negative_mode']
+        self.gen_imp_ratio = cfg['batch_settings']['gen_imp_ratio']
+        self.clusters = []
+
+        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
+        self.raw_clusters = cfg['batch_settings']['raw_clusters']
+        self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
+
+        self.data_dir = cfg[dataset_type]['path']
+
+        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+
+        self.all_files, self.files_per_classes = [], []
+        print("======= LOADING DATA(OmniglotPair) =======")
+        for sub_dir in os.listdir(self.data_dir):
+            for class_dir in os.listdir(op.join(self.data_dir, sub_dir)):
+                files = os.listdir(op.join(self.data_dir, sub_dir, class_dir))
+                files = [op.join(self.data_dir, sub_dir, class_dir, fi) for fi in files]
+
+                self.files_per_classes.append(files)
+                self.all_files.extend(files)
+        print('OmniglotPair_dataset_length: ', len(self.files_per_classes), len(self.all_files))
+        # assert len(self.alphabet) == len(self.files_per_classes)
+
+    def __getitem__(self, idx: int) -> dict:
+        pair_ids = self.generatePairs()
+
+        pair_imgs, pair_lbls = [], []
+        for pair_id in pair_ids:
+            c, i = pair_id[0], pair_id[1]
+            file = self.files_per_classes[c][i]
+            with open(file, "r") as data_f:
+                data = json.load(data_f)
+                mask = torch.tensor(data[1]["data"]).reshape(1, 37, 37)
+
+            bgr_idx = np.random.randint(len(self.all_files))
+            bgr_file = self.all_files[bgr_idx]
+            with open(bgr_file, "r") as data_f:
+                bgr_data = json.load(data_f)
+                bgr = torch.tensor(bgr_data[0]["data"]).reshape(1, 37, 37)
+
+            image = bgr * mask
+            lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
+
+            if random.uniform(0, 1) < 0.7:
+                image = self.transforms(image)
+
+            pair_imgs.append(image)
+            pair_lbls.append(lbl)
+
+        sample = {
+            "image": pair_imgs,
+            "label": pair_lbls
+        }
+
+        return sample
+
+    def get_alph(self) -> list:
+        return self.alphabet
+
+    def __len__(self) -> int:
+        return len(self.all_files)
 
 
 class OmniglotTriplet(Dataset, TripletDataset):
@@ -290,6 +427,11 @@ class OmniglotTriplet(Dataset, TripletDataset):
     def __getitem__(self, idx: int) -> dict:
         triplet_ids = self.generateTriplets()
 
+        transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Resize((37, 37))
+        ])
+
         triplet_imgs, triplet_lbls = [], []
         for triplet_id in triplet_ids:
             c, i = triplet_id[0], triplet_id[1]
@@ -297,10 +439,8 @@ class OmniglotTriplet(Dataset, TripletDataset):
 
             # image = read_image(file, ImageReadMode.GRAY)
             image = Image.open(file).convert('L')
-            trans1 = torchvision.transforms.ToTensor()
-            transform = torchvision.transforms.Resize((37, 37))
 
-            triplet_imgs.append(transform(trans1(image)))
+            triplet_imgs.append(transform(image))
             triplet_lbls.append(torch.tensor(c))
 
         sample = {
@@ -317,7 +457,7 @@ class OmniglotTriplet(Dataset, TripletDataset):
         return len(self.all_files)
 
 
-class KorSyntheticContrastive(Dataset, PairDataset):
+class KorSyntheticPair(Dataset, PairDataset):
     def __init__(self, dataset_type: str, cfg: dict, transforms):
         super().__init__()
         self.transforms = transforms
@@ -337,7 +477,7 @@ class KorSyntheticContrastive(Dataset, PairDataset):
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files, self.files_per_classes = [], []
-        print("======= LOADING DATA(KorSyntheticContrastive) =======")
+        print("======= LOADING DATA(KorSyntheticPair) =======")
         for class_dir in os.listdir(self.data_dir):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]

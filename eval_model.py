@@ -63,31 +63,22 @@ def validate_oneshot(config, recognizer, valid_loader):
 
     count = 0  # torch.zeros(valid_dataset.get_alph_size()).cuda()
     for idx, mb in enumerate(pbar):
-        img = mb['image'].cuda()
-        lbl = mb['label'].cuda()
+
+        train_img = mb['train'][0].cuda()
+        test_img = mb['test'][0].cuda()
+        lbl = mb['lbl'].cuda()
 
         if idx < 10 and config['save_images']:
-            save_image(img[0], os.path.join('/home/arseniy/results/out/torch_out', 'out_valid_' + str(idx) + '.png'))
+            save_image(train_img[0], os.path.join('/home/arseniy/results/out/torch_out', 'out_valid_' + str(idx) + '.png'))
 
-        data_out = recognizer(img)
+        train_data_out = recognizer(train_img)
+        test_data_out = recognizer(test_img)
 
-        # min_norm = torch.empty(data_out.size()[0]).fill_(1e+10).cuda()
-        # ids = torch.zeros(lbl.size()).cuda()
-        #
-        # i = 0
-        # for j in range(descrs.size()[0]):
-        #     cur_norm = torch.sqrt(torch.sum((data_out - descrs[j]) ** 2, dim=1))
-        #
-        #     temp = cur_norm < min_norm
-        #     min_norm[temp] = cur_norm[temp]
-        #     ids[temp] = torch.tensor(i, dtype=torch.float).cuda()
-        #     i += 1
+        # print(train_data_out.shape, test_data_out.shape)
 
-        # Compute Euclidean distances between each vector in data_out and descrs
-        distances = torch.cdist(data_out, descrs)
+        distances = torch.cdist(test_data_out.unsqueeze(1), train_data_out.unsqueeze(0))
 
-        # Find the index of the closest vector in descrs for each vector in data_out
-        ids = torch.argmin(distances, dim=1)
+        ids = torch.argmin(distances.squeeze(1), dim=1)
 
         # Optionally, you can also compute the minimum distances
         # min_distances = torch.min(distances, dim=1).values
@@ -96,12 +87,13 @@ def validate_oneshot(config, recognizer, valid_loader):
 
         pbar.set_description("Valid [count %d]" % count)
 
+    accuracy = 100 * count / (20 * 20)
     print('\nCount: ', count,
-          '\nLength: ', len(valid_loader.dataset),
-          '\nAccuracy: ', 100 * count / len(valid_loader.dataset),
+          '\nLength: ', 20 * 20,
+          '\nAccuracy: ', accuracy,
           '\nTime: {:.2f} sec'.format(time.time() - start_time))
 
-    return 100 * count / len(valid_loader.dataset)
+    return accuracy
 
 
 if __name__ == "__main__":

@@ -1,12 +1,16 @@
 from dataset import ChooseDataset
 from model import *
 from train_utils import prepare_dirs, run_training
-from eval_model import validate
 import ujson as json
+import argparse
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Siamese models')
+    parser.add_argument('-c', type=str, help='Config model path')
+    args = parser.parse_args()
+    config_path = args.c
 
-    config_path = "train_config_0.json"
+    # config_path = "train_config_0.json"
 
     with open(config_path, "r", encoding='utf8') as cfg_file:
         cfg = json.load(cfg_file)
@@ -16,8 +20,8 @@ if __name__ == "__main__":
     transforms = prepare_augmentation()
 
     train_dataset = ChooseDataset("train_data", cfg, transforms)
+    test_dataset = ChooseDataset("test_data", cfg, transforms)
     valid_dataset = ChooseDataset("valid_data", cfg, transforms)
-    test_dataset = None
 
     # train_dataset, test_dataset = None, None
     # if cfg['batch_settings']['type'] == 'triplet':
