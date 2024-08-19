@@ -89,14 +89,40 @@ class ContrastiveLoss(torch.nn.Module):
         #     return torch.mean(torch.pow(delta, 2))  # mean over all rows
 
 
-def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter, metric_type):
+class MetricLoss(torch.nn.Module):
+    def __init__(self, margin):
+        super(MetricLoss, self).__init__()
+        self.margin = margin
+
+    def forward(self, anc, pos, neg, anc_ideal, pos_ideal, neg_ideal):
+        ro, tau, xi = 0.1, 1.0, 1.0
+
+        d_AN = torch.nn.functional.pairwise_distance(anc, neg)
+        d_AP = torch.nn.functional.pairwise_distance(anc, pos)
+
+        d_AIdeal = torch.nn.functional.pairwise_distance(anc, anc_ideal)
+        d_PIdeal = torch.nn.functional.pairwise_distance(pos, pos_ideal)
+        d_NIdeal = torch.nn.functional.pairwise_distance(neg, neg_ideal)
+
+        f = nn.Softplus()
+
+        g1 = ro * d_AP
+        g2 = tau * f(d_AP - d_AN + self.margin)
+        g3 = xi * (d_AIdeal + d_PIdeal + d_NIdeal) / 3.0
+
+        loss_metric = g1 * g1 + g2 * g2 + g3 * g3
+        return loss_metric
+
+
+def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter,
+                    loss_type):
     # pbar = tqdm(range(config["batch_settings"]["iterations"]))
     # for idx in pbar:
 
     pbar = tqdm(train_loader)
     for idx, mb in enumerate(pbar):
 
-    #     mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+        #     mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
         size = len(mb['image'])
         img_out, lbl_out = [None] * size, [None] * size
 
@@ -115,10 +141,15 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
             ideals[lbl] += out.detach()
             counter[lbl] += 1
 
-        if metric_type == "triplet":
+        if loss_type == "triplet":
             cur_loss = loss(img_out[0], img_out[1], img_out[2])
-        elif metric_type == "contrastive":
+        elif loss_type == "contrastive":
             cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
+        elif loss_type == "metric":
+
+            cur_loss = loss(img_out[0], img_out[1], img_out[2], ideals[lbl_out[0]], ideals[lbl_out[1], ideals[lbl_out[2]]])
+        elif loss_type == "BCE":
+            cur_loss = loss()
         else:
             print('No type!')
             exit(-1)
@@ -175,9 +206,9 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
                               num_workers=10)
 
     test_loader = DataLoader(dataset=test_dataset,
-                              batch_size=config['batch_settings']['elements_per_batch'],
-                              shuffle=True,
-                              num_workers=10)
+                             batch_size=config['batch_settings']['elements_per_batch'],
+                             shuffle=True,
+                             num_workers=10)
 
     valid_loader = DataLoader(dataset=valid_dataset,
                               batch_size=1,  # config['minibatch_size'],
@@ -197,17 +228,25 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
     # print(trans1(train_dataset[40]['image'][0]))
     # exit(-1)
 
-    metric_type = config['batch_settings']['type']
+    loss_type = config['loss']
+    batch_type = config['batch_settings']['type']
 
     ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
     counter = torch.empty(train_dataset.get_alph_size()).fill_(1e-10).cuda()
 
     min_test_loss = np.inf
     loss = None
-    if metric_type == 'triplet':
+    if loss_type == 'triplet':
         loss = nn.TripletMarginLoss(margin=config['batch_settings']['alpha_margin']).cuda()
-    elif metric_type == 'contrastive':
+    elif loss_type == 'contrastive':
         loss = ContrastiveLoss(margin=config['batch_settings']['alpha_margin']).cuda()
+    elif loss_type == 'BCE':
+        loss = nn.BCELoss().cuda()
+    elif loss_type == 'metric':
+        loss = MetricLoss(margin=config['batch_settings']['alpha_margin'])
+    else:
+        print('No Loss found!')
+        exit(-1)
 
     stat = {'epochs': [],
             'train_losses': [],
@@ -221,8 +260,8 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
         train_loss = 0.0
         start_time = time.time()
         train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
-                                      ideals,
-                                      counter, metric_type)
+                                     ideals,
+                                     counter, loss_type)
 
         ideals = torch.div(ideals.T, counter).T
 

@@ -1,6 +1,7 @@
 from dataset import ChooseDataset
 from model import *
 from train_utils import prepare_dirs, run_training
+from eval_model import *
 import ujson as json
 import argparse
 
@@ -23,15 +24,6 @@ if __name__ == "__main__":
     test_dataset = ChooseDataset("test_data", cfg, transforms)
     valid_dataset = ChooseDataset("valid_data", cfg, transforms)
 
-    # train_dataset, test_dataset = None, None
-    # if cfg['batch_settings']['type'] == 'triplet':
-    #     train_dataset = KorSyntheticTriplet(cfg=cfg, transforms=transforms)
-    # elif cfg['batch_settings']['type'] == 'contrastive':
-    #     train_dataset = KorSyntheticContrastive(cfg=cfg, transforms=transforms)
-
-    # test_dataset = PHD08Dataset(cfg=cfg)
-    # valid_dataset = PHD08ValidDataset(cfg=cfg)
-
     torch.cuda.set_device(cfg['device'])
     if torch.cuda.is_available():
         print(torch.cuda.get_device_name(cfg['device']) + ' is available!')
@@ -40,8 +32,6 @@ if __name__ == "__main__":
         exit(-1)
 
     model = ChooseModel(cfg["model_name"])
-    # model = KorNet().cuda()
-    # model.summary()
 
     start_ep = 0
     if cfg['file_to_start']:
