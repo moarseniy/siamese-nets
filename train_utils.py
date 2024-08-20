@@ -14,7 +14,6 @@ import torchvision
 from torchvision.utils import save_image
 from eval_model import *
 
-
 def _g(w, h, x, y, c, n, i):
     return ((c * h + y) * w + x) * n + i
 
@@ -114,8 +113,8 @@ class MetricLoss(torch.nn.Module):
         return loss_metric
 
 
-def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, ideals, counter,
-                    loss_type):
+def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
+                    ideals, counter, dists, loss_type):
     # pbar = tqdm(range(config["batch_settings"]["iterations"]))
     # for idx in pbar:
 
@@ -141,12 +140,13 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
             ideals[lbl] += out.detach()
             counter[lbl] += 1
 
+            dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
+
         if loss_type == "triplet":
             cur_loss = loss(img_out[0], img_out[1], img_out[2])
         elif loss_type == "contrastive":
             cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
         elif loss_type == "metric":
-
             cur_loss = loss(img_out[0], img_out[1], img_out[2], ideals[lbl_out[0]], ideals[lbl_out[1], ideals[lbl_out[2]]])
         elif loss_type == "BCE":
             cur_loss = loss()
@@ -233,6 +233,8 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
     ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
     counter = torch.empty(train_dataset.get_alph_size()).fill_(1e-10).cuda()
+    dists = torch.zeros(train_dataset.get_alph_size()).cuda()
+    probs_vec = torch.empty(train_dataset.get_alph_size()).fill_(1.0 / train_dataset.get_alph_size()).cuda()
 
     min_test_loss = np.inf
     loss = None
@@ -260,8 +262,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
         train_loss = 0.0
         start_time = time.time()
         train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
-                                     ideals,
-                                     counter, loss_type)
+                                     ideals, counter, dists, loss_type)
 
         ideals = torch.div(ideals.T, counter).T
 
@@ -282,12 +283,10 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
         if not os.path.exists(ep_save_pt):
             os.mkdir(ep_save_pt)
 
-        if config['batch_settings']['negative_mode'] == 'auto_clusters' and \
-                e % config["batch_settings"]["make_clust_on_ep"] == 0:
-            start_time = time.time()
-            print('Started generation of clusters')
-            train_dataset.update_rules(ideals, ep_save_pt)
-            print('Finished generation of clusters {:.2f} sec'.format(time.time() - start_time))
+        start_time = time.time()
+        print('Started updating rules!')
+        train_dataset.update_rules(ideals, counter, ep_save_pt, config, e)
+        print('Finished updating rules {:.2f} sec'.format(time.time() - start_time))
 
         print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
                                                                  train_loss / len(train_loader)))

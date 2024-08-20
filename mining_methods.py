@@ -2,13 +2,28 @@ import torch
 import json, time
 from tqdm import tqdm
 
-def generate_sym_probs():
+
+def generate_sym_probs(dists, ideals, counter, probs_vec, w, gamma):
+    alph_size = ideals.size()[0]
+    if probs_vec.size() == alph_size:
+        probs_vec.resize(alph_size)
+        probs_vec[:] = 1.0 / alph_size
+
+    amp_dists = torch.pow(dists, gamma)
+    p = amp_dists / torch.sum(amp_dists)
+    probs_vec = torch.pow((1 - w) * p + w * probs_vec, gamma)
 
 
-def update_dists():
+def save_sym_probs(out_path, probs_vec, alphabet):
+    sym_probs = {}
+    for i in range(len(probs_vec.size())):
+        sym_probs[alphabet[i]] = probs_vec[i].item()
+
+    with open(out_path, 'w', encoding='utf8') as json_out:
+        json.dump(sym_probs, json_out, indent=2, ensure_ascii=False)
+
 
 def generate_clusters(ideals, raw_clusters, classes_count):
-
     if raw_clusters < classes_count:
         norms_count = raw_clusters
     else:
@@ -29,7 +44,6 @@ def generate_clusters(ideals, raw_clusters, classes_count):
         norms_res = torch.cat((norms_res, norms))
         _, indices = torch.topk(norms_res[:, 0], k=norms_count, largest=False)
         norms_res = norms_res[indices]
-
 
     # norms_count = None
     # if raw_clusters < classes_count:
@@ -55,8 +69,6 @@ def generate_clusters(ideals, raw_clusters, classes_count):
     #
     #     norms_res = torch.cat((norms_res, norms))
     #     norms_res = torch.stack(sorted(norms_res, key=lambda x: x[0]))[:norms_count]
-
-
 
     return norms_res
 
@@ -85,7 +97,7 @@ def merge_clusters(norms_res, merged_clusters, cluster_max_size):
         elif not found_class1 and not found_class2:
             merged_clusters.append([class1, class2])
         elif found_class1 and found_class2 and idx1 != idx2:
-            if (len(merged_clusters[idx1]) + len(merged_clusters[idx2]))< cluster_max_size:
+            if (len(merged_clusters[idx1]) + len(merged_clusters[idx2])) < cluster_max_size:
                 merged_clusters[idx1].extend(merged_clusters[idx2])
                 merged_clusters.pop(idx2)
 

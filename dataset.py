@@ -20,9 +20,13 @@ import torchvision
 import random
 
 from PIL import Image
-from cluster import generate_clusters
-from cluster import merge_clusters
-from cluster import save_clusters
+
+from mining_methods import generate_clusters
+from mining_methods import merge_clusters
+from mining_methods import save_clusters
+
+from mining_methods import generate_sym_probs
+from mining_methods import save_sym_probs
 
 
 def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transforms) -> Dataset:
@@ -106,17 +110,36 @@ class SiameseDataset:
     def get_alph_size(self) -> int:
         return len(self.files_per_classes)
 
-    def update_rules(self, ideals, ep_save_pt):
-        generation_time = time.time()
-        norms_res = generate_clusters(ideals, self.raw_clusters, len(self.alphabet))
-        print('Generation time: {:.2f} sec'.format(time.time() - generation_time))
+    def update_rules(self, ideals, counter, dists, probs_vec, ep_save_pt, config, e):
 
-        merge_time = time.time()
-        self.clusters = []
-        merge_clusters(norms_res, self.clusters, self.cluster_max_size)
-        print('Merge time: {:.2f} sec, Total clusters size: {}'.format(time.time() - merge_time, len(self.clusters)))
+        if config['batch_settings']['negative_mode'] == 'auto_clusters' and \
+                e % config["batch_settings"]["make_clust_on_ep"] == 0:
+            generation_time = time.time()
 
-        save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
+            norms_res = generate_clusters(ideals, self.raw_clusters, len(self.alphabet))
+
+            print('Generation clusters time: {:.2f} sec'.format(time.time() - generation_time))
+
+            merge_time = time.time()
+
+            self.clusters = []
+            merge_clusters(norms_res, self.clusters, self.cluster_max_size)
+
+            print('Merge clusters time: {:.2f} sec, Total clusters size: {}'.format(time.time() - merge_time, len(self.clusters)))
+
+            save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
+
+        if config['batch_settings']['positive_mode'] == 'auto_sym_probs':
+            sym_probs_time = time.time()
+
+            sym_probs_gamma = config['batch_settings']['sym_probs_gamma']
+            merge_w = config['batch_settings']['merge_w']
+
+            generate_sym_probs(dists, ideals, counter, probs_vec, merge_w, sym_probs_gamma)
+
+            print('Generation sym_probs time: {:.2f} sec'.format(time.time() - sym_probs_time))
+
+            save_sym_probs(os.path.join(ep_save_pt, 'sym_probs.json'), probs_vec, self.alphabet)
 
 
 class PairDataset(SiameseDataset):
