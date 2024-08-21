@@ -94,7 +94,7 @@ class MetricLoss(torch.nn.Module):
         self.margin = margin
 
     def forward(self, anc, pos, neg, anc_ideal, pos_ideal, neg_ideal):
-        ro, tau, xi = 0.1, 1.0, 1.0
+        ro, tau, xi = 0.0, 1.5, 0.2
 
         d_AN = torch.nn.functional.pairwise_distance(anc, neg)
         d_AP = torch.nn.functional.pairwise_distance(anc, pos)
@@ -103,14 +103,15 @@ class MetricLoss(torch.nn.Module):
         d_PIdeal = torch.nn.functional.pairwise_distance(pos, pos_ideal)
         d_NIdeal = torch.nn.functional.pairwise_distance(neg, neg_ideal)
 
-        f = nn.Softplus()
+        f = nn.Softplus(threshold=20000)
+        triplet_loss = nn.TripletMarginLoss()
 
         g1 = ro * d_AP
-        g2 = tau * f(d_AP - d_AN + self.margin)
+        g2 = tau * f(d_AP - d_AN + self.margin) # triplet_loss(anc, pos, neg) #
         g3 = xi * (d_AIdeal + d_PIdeal + d_NIdeal) / 3.0
 
-        loss_metric = g1 * g1 + g2 * g2 + g3 * g3
-        return loss_metric
+        loss_metric = (g1 * g1) + (g2 * g2) + (g3 * g3)
+        return loss_metric.mean()
 
 
 def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
@@ -147,7 +148,8 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
         elif loss_type == "contrastive":
             cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
         elif loss_type == "metric":
-            cur_loss = loss(img_out[0], img_out[1], img_out[2], ideals[lbl_out[0]], ideals[lbl_out[1], ideals[lbl_out[2]]])
+            cur_loss = loss(img_out[0], img_out[1], img_out[2],
+                            ideals[lbl_out[0]], ideals[lbl_out[1]], ideals[lbl_out[2]])
         elif loss_type == "BCE":
             cur_loss = loss()
         else:
@@ -203,17 +205,17 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
     train_loader = DataLoader(dataset=train_dataset,
                               batch_size=config['minibatch_size'],
                               shuffle=True,
-                              num_workers=10)
+                              num_workers=8)
 
     test_loader = DataLoader(dataset=test_dataset,
                              batch_size=config['batch_settings']['elements_per_batch'],
                              shuffle=True,
-                             num_workers=10)
+                             num_workers=8)
 
     valid_loader = DataLoader(dataset=valid_dataset,
                               batch_size=1,  # config['minibatch_size'],
                               shuffle=False,
-                              num_workers=10)
+                              num_workers=8)
 
     # if config['validate_settings']['validate'] and config['file_to_start']:
     #     print('Validation started!')
@@ -285,7 +287,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
         start_time = time.time()
         print('Started updating rules!')
-        train_dataset.update_rules(ideals, counter, ep_save_pt, config, e)
+        train_dataset.update_rules(ideals, counter, dists, probs_vec, ep_save_pt, config, e)
         print('Finished updating rules {:.2f} sec'.format(time.time() - start_time))
 
         print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time,

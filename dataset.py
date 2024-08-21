@@ -40,7 +40,7 @@ def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transfor
         if mode == 'triplet':
             return OmniglotTriplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
         elif mode == 'pair':
-            return OmniglotPair(cfg=cfg, transforms=transforms)
+            return OmniglotPair(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
     elif cfg[dataset_type]["name"] == "OmniglotOneShot":
         return OmniglotOneShot(dataset_type=dataset_type, cfg=cfg)
     elif cfg[dataset_type]["name"] == "PHD08ValidDataset":
@@ -379,28 +379,23 @@ class OmniglotPair(Dataset, PairDataset):
     def __getitem__(self, idx: int) -> dict:
         pair_ids = self.generatePairs()
 
+        convert_transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Resize((37, 37))
+        ])
+
         pair_imgs, pair_lbls = [], []
         for pair_id in pair_ids:
             c, i = pair_id[0], pair_id[1]
             file = self.files_per_classes[c][i]
-            with open(file, "r") as data_f:
-                data = json.load(data_f)
-                mask = torch.tensor(data[1]["data"]).reshape(1, 37, 37)
 
-            bgr_idx = np.random.randint(len(self.all_files))
-            bgr_file = self.all_files[bgr_idx]
-            with open(bgr_file, "r") as data_f:
-                bgr_data = json.load(data_f)
-                bgr = torch.tensor(bgr_data[0]["data"]).reshape(1, 37, 37)
+            image = Image.open(file).convert('L')
 
-            image = bgr * mask
-            lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
+            # if random.uniform(0, 1) < 0.7:
+            #     image = self.transforms(image)
 
-            if random.uniform(0, 1) < 0.7:
-                image = self.transforms(image)
-
-            pair_imgs.append(image)
-            pair_lbls.append(lbl)
+            pair_imgs.append(convert_transform(image))
+            pair_lbls.append(torch.tensor(c))
 
         sample = {
             "image": pair_imgs,

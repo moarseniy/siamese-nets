@@ -16,35 +16,35 @@ if __name__ == "__main__":
     with open(config_path, "r", encoding='utf8') as cfg_file:
         cfg = json.load(cfg_file)
 
-    save_pt, save_im_pt = prepare_dirs(cfg)
+    save_pt, save_im_pt = prepare_dirs(cfg['common'])
 
     transforms = prepare_augmentation()
 
-    train_dataset = ChooseDataset("train_data", cfg, transforms)
-    test_dataset = ChooseDataset("test_data", cfg, transforms)
-    valid_dataset = ChooseDataset("valid_data", cfg, transforms)
+    train_dataset = ChooseDataset("train_data", cfg['common'], transforms)
+    test_dataset = ChooseDataset("test_data", cfg['common'], transforms)
+    valid_dataset = ChooseDataset("valid_data", cfg['common'], transforms)
 
-    torch.cuda.set_device(cfg['device'])
+    torch.cuda.set_device(cfg['common']['device'])
     if torch.cuda.is_available():
-        print(torch.cuda.get_device_name(cfg['device']) + ' is available!')
+        print(torch.cuda.get_device_name(cfg['common']['device']) + ' is available!')
     else:
         print('No GPU!!!')
         exit(-1)
 
-    model = ChooseModel(cfg["model_name"])
+    model = ChooseModel(cfg['common']["model_name"])
 
     start_ep = 0
-    if cfg['file_to_start']:
-        chpnt = cfg['file_to_start'].split("/")[-2]
+    if cfg['common']['file_to_start']:
+        chpnt = cfg['common']['file_to_start'].split("/")[-2]
         start_ep = int(chpnt) + 1
 
-        checkpoint = torch.load(cfg['file_to_start'])
+        checkpoint = torch.load(cfg['common']['file_to_start'])
         model.load_state_dict(checkpoint)  # ['model_state_dict'])
-        print("Successfully loaded weights from", cfg['file_to_start'])
+        print("Successfully loaded weights from", cfg['common']['file_to_start'])
 
-    model_optimizer = torch.optim.Adam(model.parameters(), lr=cfg['lr'])
+    model_optimizer = torch.optim.Adam(model.parameters(), lr=cfg['common']['lr'])
 
-    run_training(config=cfg,
+    run_training(config=cfg['common'],
                  recognizer=model,
                  optimizer=model_optimizer,
                  train_dataset=train_dataset,

@@ -1,32 +1,50 @@
 {
-  "epoch_num": 10000,
-  "model_name": "KorNet",
-  "train_data": {"name":"Omniglot", "path": "/home/arseniy/omniglot/images_background/"},
-  "test_data": {"name":"Omniglot", "path": "/home/arseniy/omniglot/images_evaluation"},
-  "valid_data": {"name": "OmniglotOneShot", "path": "/home/arseniy/omniglot/all_runs/"},
-  "valid_data1": {"name": "Omniglot", "path": "/home/arseniy/omniglot/images_evaluation/"},
-  "alph_pt": "/home/arseniy/omniglot/omniglot_alphabet_train.json",
-  "checkpoint_pt": "/home/arseniy/siamese_out/cc",
-  "images_pt" : "/home/arseniy/siamese_out/im",
-  "device": 0,
-  "file_to_start": "",
-  "save_images": true,
-  "minibatch_size": 10240,
-  "lr": 1e-3,
-  "description": "type=triplet, alpha_margin=4, pm=rand, nm=clust, in_p=0.2, raw_clust=30000, make_clust_on_ep=5",
-  "batch_settings": {
-    "alpha_margin": 4,
-    "cluster_max_size": 50,
-    "type": "triplet",
-    "elements_per_batch": 1,
-    "iterations": 40,
-    "gen_imp_ratio": 0.3,
-    "positive_mode": "random",
-    "negative_mode": "auto_clusters",
-    "inner_imp_prob": 0.2,
-    "raw_clusters": 1000,
-    "sym_probs_gamma": 2.0,
-    "merge_w": 0.0,
-    "make_clust_on_ep": 1
+  "common": {
+    "epoch_num": 5000,
+    "model_name": "KorNet",
+    "train_data": {
+      "name": "Omniglot",
+      "path": "/home/arseniy/data/omniglot/python/images_background/"
+    },
+    "test_data": {
+      "name": "Omniglot",
+      "path": "/home/arseniy/data/omniglot/python/images_evaluation"
+    },
+    "valid_data": {
+      "name": "OmniglotOneShot",
+      "path": "/home/arseniy/data/omniglot/python/all_runs"
+    },
+    "valid_data1": {
+      "name": "Omniglot",
+      "path": "/home/arseniy/data/omniglot/python/images_evaluation/"
+    },
+    "alph_pt": "/home/arseniy/data/omniglot/omniglot_alphabet.json",
+    "checkpoint_pt": "/home/arseniy/data/out/siamese_out/cc",
+    "images_pt": "/home/arseniy/data/out/siamese_out/im",
+    "device": 0,
+    "file_to_start": "",
+    "save_images": true,
+    "minibatch_size": 1900,
+    "lr": 1e-3,
+    "loss": "metric",
+    "description": "type=triplet, alpha_margin=4, pm=rand, nm=clust, in_p=0.2, raw_clust=30000, make_clust_on_ep=5",
+    "batch_settings": {
+      "alpha_margin": 10,
+      "cluster_max_size": 50,
+      "type": "triplet",
+      "elements_per_batch": 1,
+      "iterations": 40,
+      "gen_imp_ratio": 0.3,
+      "positive_mode": "auto_sym_probs1",
+      "negative_mode": "auto_clusters1",
+      "inner_imp_prob": 0.2,
+      "raw_clusters": 1000,
+      "sym_probs_gamma": 2.0,
+      "merge_w": 0.0,
+      "make_clust_on_ep": 1
+    }
+  },
+  "augmentation": {
+    "to_use": true
   }
 }
