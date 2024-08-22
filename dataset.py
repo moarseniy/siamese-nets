@@ -75,6 +75,11 @@ class SiameseDataset:
         pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
         return pos_c, pos_id
 
+    def choose_positive_symprobs(self):
+        pos_c = np.random.choice(len(self.files_per_classes), 1, p=self.probs_vec)
+        pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
+        return pos_c, pos_id
+
     def create_positive(self, pos_c, pos_id):
         anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
         while anc_id == pos_id:
@@ -110,7 +115,7 @@ class SiameseDataset:
     def get_alph_size(self) -> int:
         return len(self.files_per_classes)
 
-    def update_rules(self, ideals, counter, dists, probs_vec, ep_save_pt, config, e):
+    def update_rules(self, ideals, counter, dists, ep_save_pt, config, e):
 
         if config['batch_settings']['negative_mode'] == 'auto_clusters' and \
                 e % config["batch_settings"]["make_clust_on_ep"] == 0:
@@ -135,11 +140,11 @@ class SiameseDataset:
             sym_probs_gamma = config['batch_settings']['sym_probs_gamma']
             merge_w = config['batch_settings']['merge_w']
 
-            generate_sym_probs(dists, ideals, counter, probs_vec, merge_w, sym_probs_gamma)
+            generate_sym_probs(dists, ideals, counter, self.probs_vec, merge_w, sym_probs_gamma)
 
             print('Generation sym_probs time: {:.2f} sec'.format(time.time() - sym_probs_time))
 
-            save_sym_probs(os.path.join(ep_save_pt, 'sym_probs.json'), probs_vec, self.alphabet)
+            save_sym_probs(os.path.join(ep_save_pt, 'sym_probs.json'), self.probs_vec, self.alphabet)
 
 
 class PairDataset(SiameseDataset):
@@ -155,7 +160,11 @@ class PairDataset(SiameseDataset):
 
             pair_ids = [[pos_c, pos_id1], [pos_c, pos_id2]]
         else:
-            pos_c, pos_id = self.choose_positive_random()
+            pos_c, pos_id = None, None
+            if self.positive_mode == "auto_sym_probs":
+                pos_c, pos_id = self.choose_positive_symprobs()
+            else:
+                pos_c, pos_id = self.choose_positive_random()
 
             neg_c, neg_id = None, None
             if self.negative_mode == "auto_clusters":
@@ -173,7 +182,12 @@ class TripletDataset(SiameseDataset):
         super().__init__(*args)
 
     def generateTriplets(self):
-        pos_c, pos_id = self.choose_positive_random()
+        pos_c, pos_id = None, None
+        if self.positive_mode == "auto_sym_probs":
+            pos_c, pos_id = self.choose_positive_symprobs()
+        else:
+            pos_c, pos_id = self.choose_positive_random()
+
         anc_id = self.create_positive(pos_c, pos_id)
 
         neg_c, neg_id = None, None
@@ -354,7 +368,9 @@ class OmniglotPair(Dataset, PairDataset):
         self.positive_mode = cfg['batch_settings']['positive_mode']
         self.negative_mode = cfg['batch_settings']['negative_mode']
         self.gen_imp_ratio = cfg['batch_settings']['gen_imp_ratio']
+
         self.clusters = []
+        self.probs_vec = []
 
         self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
@@ -375,6 +391,8 @@ class OmniglotPair(Dataset, PairDataset):
                 self.all_files.extend(files)
         print('OmniglotPair_dataset_length: ', len(self.files_per_classes), len(self.all_files))
         # assert len(self.alphabet) == len(self.files_per_classes)
+
+        self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
 
     def __getitem__(self, idx: int) -> dict:
         pair_ids = self.generatePairs()
@@ -420,7 +438,9 @@ class OmniglotTriplet(Dataset, TripletDataset):
         self.positive_mode = cfg['batch_settings']['positive_mode']
         self.negative_mode = cfg['batch_settings']['negative_mode']
         self.gen_imp_ratio = cfg['batch_settings']['gen_imp_ratio']
+
         self.clusters = []
+        self.probs_vec = None
 
         self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
         self.raw_clusters = cfg['batch_settings']['raw_clusters']
@@ -441,6 +461,8 @@ class OmniglotTriplet(Dataset, TripletDataset):
                 self.all_files.extend(files)
         print('OmniglotTriplet_dataset_length: ', len(self.files_per_classes), len(self.all_files))
         # assert len(self.alphabet) == len(self.files_per_classes)
+
+        self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
 
     def __getitem__(self, idx: int) -> dict:
         triplet_ids = self.generateTriplets()

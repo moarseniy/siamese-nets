@@ -236,7 +236,6 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
     ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
     counter = torch.empty(train_dataset.get_alph_size()).fill_(1e-10).cuda()
     dists = torch.zeros(train_dataset.get_alph_size()).cuda()
-    probs_vec = torch.empty(train_dataset.get_alph_size()).fill_(1.0 / train_dataset.get_alph_size()).cuda()
 
     min_test_loss = np.inf
     loss = None
@@ -287,7 +286,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
         start_time = time.time()
         print('Started updating rules!')
-        train_dataset.update_rules(ideals, counter, dists, probs_vec, ep_save_pt, config, e)
+        train_dataset.update_rules(ideals, counter, dists, ep_save_pt, config, e)
         print('Finished updating rules {:.2f} sec'.format(time.time() - start_time))
 
         print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
