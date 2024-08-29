@@ -94,7 +94,7 @@ class MetricLoss(torch.nn.Module):
         self.margin = margin
 
     def forward(self, anc, pos, neg, anc_ideal, pos_ideal, neg_ideal):
-        ro, tau, xi = 0.0, 1.5, 0.2
+        ro, tau, xi = 0.1, 1.0, 1.0
 
         d_AN = torch.nn.functional.pairwise_distance(anc, neg)
         d_AP = torch.nn.functional.pairwise_distance(anc, pos)
@@ -116,13 +116,17 @@ class MetricLoss(torch.nn.Module):
 
 def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
                     ideals, counter, dists, loss_type):
-    # pbar = tqdm(range(config["batch_settings"]["iterations"]))
-    # for idx in pbar:
+    ideals = (ideals.T * counter).T
 
-    pbar = tqdm(train_loader)
-    for idx, mb in enumerate(pbar):
+    num_iters = config["batch_settings"]["iterations"]
+    mb_size = config["minibatch_size"]
+    pbar = tqdm(range(num_iters))
+    for idx in pbar:
+        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
 
-        #     mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+    # pbar = tqdm(train_loader)
+    # for idx, mb in enumerate(pbar):
+
         size = len(mb['image'])
         img_out, lbl_out = [None] * size, [None] * size
 
@@ -138,10 +142,14 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
                 save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
                                                 str(int(lbl[0])) + '_' + str(e) + '.png'))
 
-            ideals[lbl] += out.detach()
-            counter[lbl] += 1
+            # ideals[lbl] += out.detach()
+            # counter[lbl] += 1
+            ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
+            counter += torch.bincount(lbl, minlength=ideals.size(0))
 
-            dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
+            # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
+            dists.scatter_add_(0, lbl,
+                               torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
 
         if loss_type == "triplet":
             cur_loss = loss(img_out[0], img_out[1], img_out[2])
@@ -164,6 +172,8 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
 
         # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
         pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+
+    ideals = torch.div(ideals.T, counter).T
 
     return train_loss
 
@@ -198,6 +208,64 @@ def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt,
 
         test_loss += cur_loss.item()
         pbar.set_description("epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
+
+def go_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, loss_type):
+    num_iters = config["batch_settings"]["iterations"]
+    mb_size = config["minibatch_size"]
+    pbar = tqdm(range(num_iters))
+    for idx in pbar:
+        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+
+        # pbar = tqdm(train_loader)
+        # for idx, mb in enumerate(pbar):
+
+        size = len(mb['image'])
+        img_out, lbl_out = [None] * size, [None] * size
+
+        for img_id in range(size):
+            img = mb['image'][img_id].cuda()
+            lbl = mb['label'][img_id].cuda()
+            out = recognizer(img)
+
+            img_out[img_id] = out
+            lbl_out[img_id] = lbl
+
+            if idx <= 10 and config["save_images"]:
+                save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
+                                                str(int(lbl[0])) + '_' + str(e) + '.png'))
+
+            # ideals[lbl] += out.detach()
+            # counter[lbl] += 1
+            ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
+            counter += torch.bincount(lbl, minlength=ideals.size(0))
+
+            # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
+            dists.scatter_add_(0, lbl,
+                               torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
+
+        if loss_type == "triplet":
+            cur_loss = loss(img_out[0], img_out[1], img_out[2])
+        elif loss_type == "contrastive":
+            cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
+        elif loss_type == "metric":
+            cur_loss = loss(img_out[0], img_out[1], img_out[2],
+                            ideals[lbl_out[0]], ideals[lbl_out[1]], ideals[lbl_out[2]])
+        elif loss_type == "BCE":
+            cur_loss = loss()
+        else:
+            print('No type!')
+            exit(-1)
+
+        optimizer.zero_grad()
+        cur_loss.backward()
+        optimizer.step()
+
+        train_loss += cur_loss.item()
+
+        # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+        pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+
+    return train_loss
 
 
 def run_training(config, recognizer, optimizer, train_dataset, test_dataset, valid_dataset, save_pt, save_im_pt,
@@ -234,7 +302,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
     batch_type = config['batch_settings']['type']
 
     ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
-    counter = torch.empty(train_dataset.get_alph_size()).fill_(1e-10).cuda()
+    counter = torch.empty(train_dataset.get_alph_size(), dtype=torch.int32).fill_(1e-10).cuda()
     dists = torch.zeros(train_dataset.get_alph_size()).cuda()
 
     min_test_loss = np.inf
@@ -243,8 +311,10 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
         loss = nn.TripletMarginLoss(margin=config['batch_settings']['alpha_margin']).cuda()
     elif loss_type == 'contrastive':
         loss = ContrastiveLoss(margin=config['batch_settings']['alpha_margin']).cuda()
-    elif loss_type == 'BCE':
+    elif loss_type == 'BCELoss':
         loss = nn.BCELoss().cuda()
+    elif loss_type == 'BCEWithLogitsLoss':
+        loss = nn.BCEWithLogitsLoss().cuda()
     elif loss_type == 'metric':
         loss = MetricLoss(margin=config['batch_settings']['alpha_margin'])
     else:
@@ -262,10 +332,12 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
         train_loss = 0.0
         start_time = time.time()
+
+
+
         train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
                                      ideals, counter, dists, loss_type)
 
-        ideals = torch.div(ideals.T, counter).T
 
         test_loss = 0.0
         to_test = True
@@ -304,14 +376,16 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
             # ideals = torch.div(ideals.T, counter).T
             ideals_dict = {}
+            counter_dict = {}
 
             for i in range(train_dataset.get_alph_size()):
                 ideals_dict[str(i)] = ideals[i].cpu().tolist()
+                counter_dict[str(i)] = counter[i].cpu().item()
 
             with open(op.join(ep_save_pt, 'ideals.json'), 'w') as out:
                 json.dump(ideals_dict, out)
             with open(op.join(ep_save_pt, 'counter.json'), 'w') as out:
-                json.dump(counter.cpu().tolist(), out)
+                json.dump(counter_dict, out)
 
             stat['epochs'].append(e)
             stat['train_losses'].append(train_loss / len(train_loader))
@@ -349,10 +423,11 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
         if e % config["batch_settings"]["make_clust_on_ep"] == 0:
             ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
-            counter = torch.zeros(train_dataset.get_alph_size()).cuda()
+            counter = torch.empty(train_dataset.get_alph_size(), dtype=torch.int32).fill_(1e-10).cuda()
+            dists = torch.zeros(train_dataset.get_alph_size()).cuda()
 
 
-def prepare_dirs(config):
+def prepare_dirs(config, device_num):
     save_paths = {}
     files_to_start = {}
     from_file = False
@@ -363,7 +438,7 @@ def prepare_dirs(config):
         os.mkdir(checkpoint_pt)
 
     now = datetime.now()
-    dt_string = now.strftime("%d-%m-%Y-%H-%M")
+    dt_string = str(device_num) + '_' + now.strftime("%d-%m-%Y-%H-%M")
 
     # if config['file_to_start'] != "":
     #     dir = config['file_to_start'].split("/")[0]
@@ -374,6 +449,7 @@ def prepare_dirs(config):
     #     from_file = True
     # else:
     save_pt = op.join(checkpoint_pt, dt_string)
+    print('Checkpoint path:', save_pt)
     save_im_pt = op.join(images_pt, dt_string)
     if not op.exists(save_pt):
         os.makedirs(save_pt)

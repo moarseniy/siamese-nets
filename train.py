@@ -16,7 +16,7 @@ if __name__ == "__main__":
     with open(config_path, "r", encoding='utf8') as cfg_file:
         cfg = json.load(cfg_file)
 
-    save_pt, save_im_pt = prepare_dirs(cfg['common'])
+    save_pt, save_im_pt = prepare_dirs(cfg['common'], cfg['common']['device'])
 
     transforms = prepare_augmentation()
 
