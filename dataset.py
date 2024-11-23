@@ -127,10 +127,10 @@ class SiameseDataset:
     def get_alph_size(self) -> int:
         return len(self.samples_per_class)
 
-    def update_rules(self, save_ideals, ideals, counter, dists, ep_save_pt, config, e):
+    def update_rules(self, dataset_type, save_ideals, ideals, counter, dists, ep_save_pt, config, e):
 
-        if save_ideals and config['batch_settings']['negative_mode'] == 'auto_clusters' and \
-                e % config["batch_settings"]["make_clust_on_ep"] == 0:
+        if save_ideals and config['batch_settings'][dataset_type]['negative_mode'] == 'auto_clusters' and \
+                e % config["batch_settings"][dataset_type]["make_clust_on_ep"] == 0:
             generation_time = time.time()
 
             norms_res = generate_clusters(ideals, self.raw_clusters, len(self.alphabet))
@@ -146,11 +146,11 @@ class SiameseDataset:
 
             save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
 
-        if config['batch_settings']['positive_mode'] == 'auto_sym_probs':
+        if config['batch_settings'][dataset_type]['positive_mode'] == 'auto_sym_probs':
             sym_probs_time = time.time()
 
-            sym_probs_gamma = config['batch_settings']['sym_probs_gamma']
-            merge_w = config['batch_settings']['merge_w']
+            sym_probs_gamma = config['batch_settings'][dataset_type]['sym_probs_gamma']
+            merge_w = config['batch_settings'][dataset_type]['merge_w']
 
             generate_sym_probs(dists, ideals, counter, self.probs_vec, merge_w, sym_probs_gamma)
 

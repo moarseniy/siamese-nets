@@ -17,12 +17,12 @@
     "file_to_start": "",
     "save_images": true,
     "save_ideals": false,
-    "minibatch_size": 10,
+    "minibatch_size": 2,
     "description": "type=triplet, alpha_margin=12, pm=rand, nm=rand",
     "batch_settings": {
       "train": {
-        "elements_per_batch": 1024,
-        "iterations": 10,
+        "elements_per_batch": 4,
+        "iterations": 2,
         "gen_imp_ratio": 0.3,
         "positive_mode": "random",
         "negative_mode": "random",
@@ -34,8 +34,8 @@
         "make_clust_on_ep": 1
       },
       "test": {
-        "elements_per_batch": 1024,
-        "iterations": 10,
+        "elements_per_batch": 4,
+        "iterations": 2,
         "gen_imp_ratio": 0.3
       }
     },

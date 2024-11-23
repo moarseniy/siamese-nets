@@ -385,9 +385,9 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             os.mkdir(ep_save_pt)
 
         start_time = time.time()
-        print('Started updating rules!')
-        train_dataset.update_rules(save_ideals, ideals, counter, dists, ep_save_pt, config, e)
-        print('Finished updating rules {:.2f} sec'.format(time.time() - start_time))
+        # print('Started updating rules!')
+        train_dataset.update_rules("train", save_ideals, ideals, counter, dists, ep_save_pt, config, e)
+        # print('Finished updating rules {:.2f} sec'.format(time.time() - start_time))
 
         print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
                                                                  train_loss / len(train_loader)))
