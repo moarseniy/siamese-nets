@@ -1,7 +1,10 @@
 import os
-import os.path as op
-import time
 
+import os.path as op
+from os.path import join
+from os import listdir as ls
+
+import time
 import torch
 
 from multiprocessing import Pool, cpu_count
@@ -21,6 +24,8 @@ import random
 
 from PIL import Image
 
+from train_utils import read_annotations
+
 from mining_methods import generate_clusters
 from mining_methods import merge_clusters
 from mining_methods import save_clusters
@@ -30,7 +35,11 @@ from mining_methods import save_sym_probs
 
 
 def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transforms) -> Dataset:
-    mode = cfg['batch_settings']['type']
+    if not dataset_type in cfg:
+        print("No " + dataset_type + " in config!")
+        return None
+
+    mode = cfg['loss_settings']['type']
     if cfg[dataset_type]["name"] == "KorSynthetic":
         if mode == 'triplet':
             return KorSyntheticTriplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
@@ -45,6 +54,9 @@ def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transfor
         return OmniglotOneShot(dataset_type=dataset_type, cfg=cfg)
     elif cfg[dataset_type]["name"] == "PHD08ValidDataset":
         return PHD08ValidDataset(dataset_type=dataset_type, cfg=cfg)
+    elif cfg[dataset_type]["name"] == "MOT":
+        if mode == 'triplet':
+            return MOT_Triplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
     else:
         print("Dataset name is not defined!!!")
         exit(-1)
@@ -68,29 +80,29 @@ def prepare_alph(alph_pt: str) -> (list, dict):
 
 class SiameseDataset:
     def __init__(self):
-        self.files_per_classes = []
+        self.samples_per_class = []
 
     def choose_positive_random(self):
-        pos_c = np.random.randint(len(self.files_per_classes))
-        pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
+        pos_c = np.random.randint(len(self.samples_per_class))
+        pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
         return pos_c, pos_id
 
     def choose_positive_symprobs(self):
-        pos_c = np.random.choice(len(self.files_per_classes), 1, p=self.probs_vec)
-        pos_id = np.random.randint(len(self.files_per_classes[pos_c]))
+        pos_c = np.random.choice(len(self.samples_per_class), 1, p=self.probs_vec)
+        pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
         return pos_c, pos_id
 
     def create_positive(self, pos_c, pos_id):
-        anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
+        anc_id = np.random.randint(len(self.samples_per_class[pos_c]))
         while anc_id == pos_id:
-            anc_id = np.random.randint(len(self.files_per_classes[pos_c]))
+            anc_id = np.random.randint(len(self.samples_per_class[pos_c]))
         return anc_id
 
     def create_negative_random(self, pos_c):
-        neg_c = np.random.randint(len(self.files_per_classes))
+        neg_c = np.random.randint(len(self.samples_per_class))
         while pos_c == neg_c:
-            neg_c = np.random.randint(len(self.files_per_classes))
-        neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
+            neg_c = np.random.randint(len(self.samples_per_class))
+        neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
         return neg_c, neg_id
 
     def create_negative_clusters(self, pos_c):
@@ -102,7 +114,7 @@ class SiameseDataset:
 
                     while pos_c == neg_c:
                         neg_c = cluster[np.random.randint(len(cluster))]
-                    neg_id = np.random.randint(len(self.files_per_classes[neg_c]))
+                    neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
 
                     break
 
@@ -113,11 +125,11 @@ class SiameseDataset:
         return neg_c, neg_id
 
     def get_alph_size(self) -> int:
-        return len(self.files_per_classes)
+        return len(self.samples_per_class)
 
-    def update_rules(self, ideals, counter, dists, ep_save_pt, config, e):
+    def update_rules(self, save_ideals, ideals, counter, dists, ep_save_pt, config, e):
 
-        if config['batch_settings']['negative_mode'] == 'auto_clusters' and \
+        if save_ideals and config['batch_settings']['negative_mode'] == 'auto_clusters' and \
                 e % config["batch_settings"]["make_clust_on_ep"] == 0:
             generation_time = time.time()
 
@@ -221,9 +233,9 @@ class PHD08Dataset(Dataset, SiameseDataset):
         for class_dir in os.listdir(self.data_dir):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
-            self.files_per_classes.append(files)
+            self.samples_per_class.append(files)
             self.all_files.extend(files)
-        print('Valid_dataset_length: ', len(self.files_per_classes), len(self.all_files))
+        print('Valid_dataset_length: ', len(self.samples_per_class), len(self.all_files))
 
 
 class PHD08ValidDataset(Dataset):
@@ -233,7 +245,7 @@ class PHD08ValidDataset(Dataset):
 
         png_data_dirs = os.listdir(self.data_dir)
         self.all_files, self.all_classes = [], []
-        self.files_per_classes = []
+        self.samples_per_class = []
         self.data = []
 
         print("======= LOADING DATA(PHD08ValidDataset) =======")
@@ -254,10 +266,10 @@ class PHD08ValidDataset(Dataset):
 
             self.all_classes.extend([float(class_dir) for fi in files])
             self.all_files.extend(files)
-            self.files_per_classes.append(files)
+            self.samples_per_class.append(files)
 
         print('Valid_dataset_length: ', len(self.all_files),
-              '\nValid_dataset_alph_length: ', len(self.files_per_classes),
+              '\nValid_dataset_alph_length: ', len(self.samples_per_class),
               '\nTime: {:.2f} sec'.format(time.time() - start_time))
 
     def __len__(self) -> int:
@@ -286,13 +298,85 @@ class PHD08ValidDataset(Dataset):
         return sample
 
     def get_alph_size(self) -> int:
-        return len(self.files_per_classes)
+        return len(self.samples_per_class)
 
     def get_alphabet(self) -> list:
         return self.alphabet
 
     def get_alph_dict(self) -> dict:
         return self.alph_dict
+
+
+class MOT_Triplet(Dataset, TripletDataset):
+    def __init__(self, dataset_type: str, cfg: dict, transforms):
+        super().__init__()
+        self.transforms = transforms
+
+        self.type = cfg['loss_settings']['type']
+        self.data_dir = cfg[dataset_type]['path']
+        self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
+
+        self.clusters = []
+        self.probs_vec = None
+
+        if "positive_mode" in cfg['batch_settings'][dataset_type] and \
+            "negative_mode" in cfg['batch_settings'][dataset_type]:
+
+            self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
+            self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
+
+            self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
+            self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
+            self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
+
+        if "alphabet" in cfg:
+            self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+            self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
+
+        self.all_files, self.samples_per_class = [], []
+        print("======= LOADING DATA(MOT_Triplet) =======")
+
+        for sub_dir in os.listdir(self.data_dir):
+            for class_dir in os.listdir(op.join(self.data_dir, sub_dir)):
+                files = os.listdir(op.join(self.data_dir, sub_dir, class_dir))
+                files = [op.join(self.data_dir, sub_dir, class_dir, fi) for fi in files]
+
+                self.samples_per_class.append(files)
+                self.all_files.extend(files)
+        print('MOT_Triplet_dataset_length: ', len(self.samples_per_class), len(self.all_files))
+        # assert len(self.alphabet) == len(self.samples_per_class)
+
+    def __getitem__(self, idx: int) -> dict:
+        triplet_ids = self.generateTriplets()
+
+        transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Resize((64, 128))
+        ])
+
+        triplet_imgs, triplet_lbls = [], []
+        for triplet_id in triplet_ids:
+            c, i = triplet_id[0], triplet_id[1]
+            file = self.samples_per_class[c][i]
+
+            # image = read_image(file, ImageReadMode.GRAY)
+            image = Image.open(file)
+
+            triplet_imgs.append(transform(image))
+            triplet_lbls.append(torch.tensor(c))
+
+        sample = {
+            "image": triplet_imgs,
+            "label": triplet_lbls
+        }
+
+        return sample
+
+    def get_alph(self) -> list:
+        return self.alphabet
+
+    def __len__(self) -> int:
+        return len(self.all_files)
 
 
 class OmniglotOneShot(Dataset):
@@ -380,17 +464,17 @@ class OmniglotPair(Dataset, PairDataset):
 
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
-        self.all_files, self.files_per_classes = [], []
+        self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(OmniglotPair) =======")
         for sub_dir in os.listdir(self.data_dir):
             for class_dir in os.listdir(op.join(self.data_dir, sub_dir)):
                 files = os.listdir(op.join(self.data_dir, sub_dir, class_dir))
                 files = [op.join(self.data_dir, sub_dir, class_dir, fi) for fi in files]
 
-                self.files_per_classes.append(files)
+                self.samples_per_class.append(files)
                 self.all_files.extend(files)
-        print('OmniglotPair_dataset_length: ', len(self.files_per_classes), len(self.all_files))
-        # assert len(self.alphabet) == len(self.files_per_classes)
+        print('OmniglotPair_dataset_length: ', len(self.samples_per_class), len(self.all_files))
+        # assert len(self.alphabet) == len(self.samples_per_class)
 
         self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
 
@@ -405,7 +489,7 @@ class OmniglotPair(Dataset, PairDataset):
         pair_imgs, pair_lbls = [], []
         for pair_id in pair_ids:
             c, i = pair_id[0], pair_id[1]
-            file = self.files_per_classes[c][i]
+            file = self.samples_per_class[c][i]
 
             image = Image.open(file).convert('L')
 
@@ -450,17 +534,17 @@ class OmniglotTriplet(Dataset, TripletDataset):
 
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
-        self.all_files, self.files_per_classes = [], []
+        self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(OmniglotTriplet) =======")
         for sub_dir in os.listdir(self.data_dir):
             for class_dir in os.listdir(op.join(self.data_dir, sub_dir)):
                 files = os.listdir(op.join(self.data_dir, sub_dir, class_dir))
                 files = [op.join(self.data_dir, sub_dir, class_dir, fi) for fi in files]
 
-                self.files_per_classes.append(files)
+                self.samples_per_class.append(files)
                 self.all_files.extend(files)
-        print('OmniglotTriplet_dataset_length: ', len(self.files_per_classes), len(self.all_files))
-        # assert len(self.alphabet) == len(self.files_per_classes)
+        print('OmniglotTriplet_dataset_length: ', len(self.samples_per_class), len(self.all_files))
+        # assert len(self.alphabet) == len(self.samples_per_class)
 
         self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
 
@@ -475,7 +559,7 @@ class OmniglotTriplet(Dataset, TripletDataset):
         triplet_imgs, triplet_lbls = [], []
         for triplet_id in triplet_ids:
             c, i = triplet_id[0], triplet_id[1]
-            file = self.files_per_classes[c][i]
+            file = self.samples_per_class[c][i]
 
             # image = read_image(file, ImageReadMode.GRAY)
             image = Image.open(file).convert('L')
@@ -516,15 +600,15 @@ class KorSyntheticPair(Dataset, PairDataset):
 
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
-        self.all_files, self.files_per_classes = [], []
+        self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(KorSyntheticPair) =======")
         for class_dir in os.listdir(self.data_dir):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
-            self.files_per_classes.append(files)
+            self.samples_per_class.append(files)
             self.all_files.extend(files)
-        print('Train_dataset_length: ', len(self.files_per_classes), len(self.all_files))
-        assert len(self.alphabet) == len(self.files_per_classes)
+        print('Train_dataset_length: ', len(self.samples_per_class), len(self.all_files))
+        assert len(self.alphabet) == len(self.samples_per_class)
 
     def __len__(self) -> int:
         return len(self.all_files)
@@ -535,7 +619,7 @@ class KorSyntheticPair(Dataset, PairDataset):
         pair_imgs, pair_lbls = [], []
         for pair_id in pair_ids:
             c, i = pair_id[0], pair_id[1]
-            file = self.files_per_classes[c][i]
+            file = self.samples_per_class[c][i]
             with open(file, "r") as data_f:
                 data = json.load(data_f)
                 mask = torch.tensor(data[1]["data"]).reshape(1, 37, 37)
@@ -584,15 +668,15 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
 
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
-        self.all_files, self.files_per_classes = [], []
+        self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(KorSyntheticTriplet) =======")
         for class_dir in os.listdir(self.data_dir):
             files = os.listdir(op.join(self.data_dir, class_dir))
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
-            self.files_per_classes.append(files)
+            self.samples_per_class.append(files)
             self.all_files.extend(files)
-        print('Train_dataset_length: ', len(self.files_per_classes), len(self.all_files))
-        assert len(self.alphabet) == len(self.files_per_classes)
+        print('Train_dataset_length: ', len(self.samples_per_class), len(self.all_files))
+        assert len(self.alphabet) == len(self.samples_per_class)
 
     def __len__(self) -> int:
         return len(self.all_files)
@@ -604,7 +688,7 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
         triplet_imgs, triplet_lbls = [], []
         for triplet_id in triplet_ids:
             c, i = triplet_id[0], triplet_id[1]
-            file = self.files_per_classes[c][i]
+            file = self.samples_per_class[c][i]
             with open(file, "r") as data_f:
                 data = json.load(data_f)
                 mask = torch.tensor(data[1]["data"]).reshape(1, 37, 37)

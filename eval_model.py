@@ -6,8 +6,8 @@ from torchvision.utils import save_image
 from model import *
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from dataset import PHD08Dataset
-from dataset import PHD08ValidDataset
+# from dataset import PHD08Dataset
+# from dataset import PHD08ValidDataset
 
 
 def validate_with_descrs(config, recognizer, valid_loader, descrs):

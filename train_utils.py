@@ -6,6 +6,7 @@ import cv2
 
 import torch
 import matplotlib.pyplot as plt
+from jinja2.optimizer import optimize
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
@@ -64,6 +65,46 @@ def Dataloader_by_Index(data_loader, target=0):
         return data
     return None
 
+def read_annotations(file_path):
+    """
+    Read markup from MOT format file.
+    """
+    annotations = []
+    # frame_id, object_id, bbox_left, bbox_top, bbox_width, bbox_height, confidence, class_id, visibility
+    with open(file_path, "r") as file:
+        for line in file:
+            values = line.strip().split(",")
+            frame_id, object_id = int(values[0]), int(values[1])
+            x, y, w, h = map(float, values[2:6])  # x, y, w, h
+            class_id = int(values[7])
+            annotations.append((frame_id, object_id, x, y, w, h))
+    return annotations
+
+def ChooseOptimizer(cfg, model):
+    if cfg["type"] == "Adam":
+        return torch.optim.Adam(model.parameters(), lr=cfg["lr"])
+    elif cfg["type"] == "SGD":
+        return None
+    else:
+        print("Unknown optimizer type!")
+        return None
+
+def ChooseLoss(cfg):
+    loss_type = cfg["type"]
+    if loss_type == 'triplet':
+        loss = nn.TripletMarginLoss(margin=cfg['alpha_margin']).cuda()
+    elif loss_type == 'contrastive':
+        loss = ContrastiveLoss(margin=cfg['alpha_margin']).cuda()
+    elif loss_type == 'BCELoss':
+        loss = nn.BCELoss().cuda()
+    elif loss_type == 'BCEWithLogitsLoss':
+        loss = nn.BCEWithLogitsLoss().cuda()
+    elif loss_type == 'metric':
+        loss = MetricLoss(margin=cfg['alpha_margin'])
+    else:
+        print('No Loss found!')
+        exit(-1)
+    return loss
 
 class ContrastiveLoss(torch.nn.Module):
     def __init__(self, margin):
@@ -115,10 +156,11 @@ class MetricLoss(torch.nn.Module):
 
 
 def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
-                    ideals, counter, dists, loss_type):
-    ideals = (ideals.T * counter).T
+                    save_ideals, ideals, counter, dists, loss_type):
+    if save_ideals:
+        ideals = (ideals.T * counter).T
 
-    num_iters = config["batch_settings"]["iterations"]
+    num_iters = config["batch_settings"]["train"]["iterations"]
     mb_size = config["minibatch_size"]
     pbar = tqdm(range(num_iters))
     for idx in pbar:
@@ -142,14 +184,15 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
                 save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
                                                 str(int(lbl[0])) + '_' + str(e) + '.png'))
 
-            # ideals[lbl] += out.detach()
-            # counter[lbl] += 1
-            ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
-            counter += torch.bincount(lbl, minlength=ideals.size(0))
+            if save_ideals:
+                # ideals[lbl] += out.detach()
+                # counter[lbl] += 1
+                ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
+                counter += torch.bincount(lbl, minlength=ideals.size(0))
 
-            # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
-            dists.scatter_add_(0, lbl,
-                               torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
+                # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
+                dists.scatter_add_(0, lbl,
+                                   torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
 
         if loss_type == "triplet":
             cur_loss = loss(img_out[0], img_out[1], img_out[2])
@@ -173,7 +216,8 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
         # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
         pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
 
-    ideals = torch.div(ideals.T, counter).T
+    if save_ideals:
+        ideals = torch.div(ideals.T, counter).T
 
     return train_loss
 
@@ -271,55 +315,39 @@ def go_train(train_loader, config, recognizer, optimizer, loss, train_loss, save
 def run_training(config, recognizer, optimizer, train_dataset, test_dataset, valid_dataset, save_pt, save_im_pt,
                  start_ep):
     train_loader = DataLoader(dataset=train_dataset,
-                              batch_size=config['minibatch_size'],
+                              batch_size=config['batch_settings']['train']['elements_per_batch'],
                               shuffle=True,
                               num_workers=8)
 
-    test_loader = DataLoader(dataset=test_dataset,
-                             batch_size=config['batch_settings']['elements_per_batch'],
-                             shuffle=True,
-                             num_workers=8)
-
-    valid_loader = DataLoader(dataset=valid_dataset,
-                              batch_size=1,  # config['minibatch_size'],
-                              shuffle=False,
-                              num_workers=8)
+    test_loader = None
+    if test_dataset:
+        test_loader = DataLoader(dataset=test_dataset,
+                                 batch_size=config['batch_settings']['test']['elements_per_batch'],
+                                 shuffle=True,
+                                 num_workers=8)
+    valid_loader = None
+    if valid_dataset:
+        valid_loader = DataLoader(dataset=valid_dataset,
+                                  batch_size=['batch_settings']['valid']['elements_per_batch'],
+                                  shuffle=False,
+                                  num_workers=8)
 
     # if config['validate_settings']['validate'] and config['file_to_start']:
     #     print('Validation started!')
     #     validate(config, recognizer, valid_loader)
     #     exit(0)
 
-    # print(train_dataset[40]['image'][0], valid_dataset[40]['image'][0])
-    # trans1 = torchvision.transforms.ToTensor()
-    # res = trans1(valid_dataset[40]['image'][0])
-    # trans2 = torchvision.transforms.Normalize(mean=0., std=1 / 255.)
-    # print(trans2(valid_dataset[40]['image'][0]))
-    # print(trans1(train_dataset[40]['image'][0]))
-    # exit(-1)
+    save_ideals = config["save_ideals"]
+    loss_type = config['loss_settings']['type']
 
-    loss_type = config['loss']
-    batch_type = config['batch_settings']['type']
-
-    ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
-    counter = torch.empty(train_dataset.get_alph_size(), dtype=torch.int32).fill_(1e-10).cuda()
-    dists = torch.zeros(train_dataset.get_alph_size()).cuda()
+    ideals, counter, dists = None, None, None
+    if save_ideals:
+        ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
+        counter = torch.empty(train_dataset.get_alph_size(), dtype=torch.int32).fill_(1e-10).cuda()
+        dists = torch.zeros(train_dataset.get_alph_size()).cuda()
 
     min_test_loss = np.inf
-    loss = None
-    if loss_type == 'triplet':
-        loss = nn.TripletMarginLoss(margin=config['batch_settings']['alpha_margin']).cuda()
-    elif loss_type == 'contrastive':
-        loss = ContrastiveLoss(margin=config['batch_settings']['alpha_margin']).cuda()
-    elif loss_type == 'BCELoss':
-        loss = nn.BCELoss().cuda()
-    elif loss_type == 'BCEWithLogitsLoss':
-        loss = nn.BCEWithLogitsLoss().cuda()
-    elif loss_type == 'metric':
-        loss = MetricLoss(margin=config['batch_settings']['alpha_margin'])
-    else:
-        print('No Loss found!')
-        exit(-1)
+    loss = ChooseLoss(config["loss_settings"])
 
     stat = {'epochs': [],
             'train_losses': [],
@@ -336,7 +364,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
 
         train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
-                                     ideals, counter, dists, loss_type)
+                                     save_ideals, ideals, counter, dists, loss_type)
 
 
         test_loss = 0.0
@@ -358,34 +386,34 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
         start_time = time.time()
         print('Started updating rules!')
-        train_dataset.update_rules(ideals, counter, dists, ep_save_pt, config, e)
+        train_dataset.update_rules(save_ideals, ideals, counter, dists, ep_save_pt, config, e)
         print('Finished updating rules {:.2f} sec'.format(time.time() - start_time))
 
         print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
                                                                  train_loss / len(train_loader)))
 
-        to_valid = True
+        torch.save({
+            'epoch': e,
+            'model_state_dict': recognizer.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': 0.0,  # test_loss,
+        }, op.join(ep_save_pt, "model.pt"))
+
+        to_valid = False
         if to_valid:
+            if save_ideals:
+                # ideals = torch.div(ideals.T, counter).T
+                ideals_dict = {}
+                counter_dict = {}
 
-            torch.save({
-                'epoch': e,
-                'model_state_dict': recognizer.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': 0.0,  # test_loss,
-            }, op.join(ep_save_pt, "model.pt"))
+                for i in range(train_dataset.get_alph_size()):
+                    ideals_dict[str(i)] = ideals[i].cpu().tolist()
+                    counter_dict[str(i)] = counter[i].cpu().item()
 
-            # ideals = torch.div(ideals.T, counter).T
-            ideals_dict = {}
-            counter_dict = {}
-
-            for i in range(train_dataset.get_alph_size()):
-                ideals_dict[str(i)] = ideals[i].cpu().tolist()
-                counter_dict[str(i)] = counter[i].cpu().item()
-
-            with open(op.join(ep_save_pt, 'ideals.json'), 'w') as out:
-                json.dump(ideals_dict, out)
-            with open(op.join(ep_save_pt, 'counter.json'), 'w') as out:
-                json.dump(counter_dict, out)
+                with open(op.join(ep_save_pt, 'ideals.json'), 'w') as out:
+                    json.dump(ideals_dict, out)
+                with open(op.join(ep_save_pt, 'counter.json'), 'w') as out:
+                    json.dump(counter_dict, out)
 
             stat['epochs'].append(e)
             stat['train_losses'].append(train_loss / len(train_loader))
@@ -421,7 +449,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
                 for el in zip(stat['epochs'], stat['acc']):
                     info_txt.write(str(el[0]) + ' ' + str(el[1]) + '\n')
 
-        if e % config["batch_settings"]["make_clust_on_ep"] == 0:
+        if save_ideals and e % config["batch_settings"]["make_clust_on_ep"] == 0:
             ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
             counter = torch.empty(train_dataset.get_alph_size(), dtype=torch.int32).fill_(1e-10).cuda()
             dists = torch.zeros(train_dataset.get_alph_size()).cuda()

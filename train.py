@@ -1,6 +1,6 @@
 from dataset import ChooseDataset
 from model import *
-from train_utils import prepare_dirs, run_training
+from train_utils import prepare_dirs, run_training, ChooseOptimizer
 from eval_model import *
 import ujson as json
 import argparse
@@ -20,9 +20,9 @@ if __name__ == "__main__":
 
     transforms = prepare_augmentation()
 
-    train_dataset = ChooseDataset("train_data", cfg['common'], transforms)
-    test_dataset = ChooseDataset("test_data", cfg['common'], transforms)
-    valid_dataset = ChooseDataset("valid_data", cfg['common'], transforms)
+    train_dataset = ChooseDataset("train", cfg['common'], transforms)
+    test_dataset = ChooseDataset("test", cfg['common'], transforms)
+    valid_dataset = ChooseDataset("valid", cfg['common'], transforms)
 
     torch.cuda.set_device(cfg['common']['device'])
     if torch.cuda.is_available():
@@ -42,7 +42,7 @@ if __name__ == "__main__":
         model.load_state_dict(checkpoint)  # ['model_state_dict'])
         print("Successfully loaded weights from", cfg['common']['file_to_start'])
 
-    model_optimizer = torch.optim.Adam(model.parameters(), lr=cfg['common']['lr'])
+    model_optimizer = ChooseOptimizer(cfg['common']["optimizer_settings"], model)
 
     run_training(config=cfg['common'],
                  recognizer=model,

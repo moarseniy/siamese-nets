@@ -1,0 +1,51 @@
+{
+  "common": {
+    "epoch_num": 10000,
+    "model_name": "Light",
+    "train": {
+      "name": "MOT",
+      "path": "/home/arseniy/data/out/MOT17Det/train"
+    },
+    "test": {
+      "name": "MOT",
+      "path": "/home/arseniy/data/out/MOT20/train"
+    },
+    "checkpoint_pt": "/home/arseniy/data/out/siamese_out/cc",
+    "images_pt": "/home/arseniy/data/out/siamese_out/im",
+    "alph_pt": "",
+    "device": 0,
+    "file_to_start": "",
+    "save_images": true,
+    "save_ideals": false,
+    "minibatch_size": 10,
+    "description": "type=triplet, alpha_margin=12, pm=rand, nm=rand",
+    "batch_settings": {
+      "train": {
+        "elements_per_batch": 1024,
+        "iterations": 10,
+        "gen_imp_ratio": 0.3,
+        "positive_mode": "random",
+        "negative_mode": "random",
+        "inner_imp_prob": 0.2,
+        "raw_clusters": 1000,
+        "cluster_max_size": 200,
+        "sym_probs_gamma": 2.0,
+        "merge_w": 0.0,
+        "make_clust_on_ep": 1
+      },
+      "test": {
+        "elements_per_batch": 1024,
+        "iterations": 10,
+        "gen_imp_ratio": 0.3
+      }
+    },
+    "loss_settings": {
+      "type": "triplet",
+      "alpha_margin": 12
+    },
+    "optimizer_settings": {
+      "type": "Adam",
+      "lr": 1e-2
+    }
+  }
+}

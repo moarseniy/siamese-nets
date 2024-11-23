@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from torchvision.transforms import v2
-
+import torch.nn.functional as F
 
 class SymReLU(torch.nn.Module):
     def __init__(self):
@@ -170,11 +170,37 @@ class OneShotNet(nn.Module):
         return scores
 
 
+class LightweightEmbeddingNet(nn.Module):
+    def __init__(self, embedding_dim=64):
+        super(LightweightEmbeddingNet, self).__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.bn3 = nn.BatchNorm2d(64)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.fc1 = nn.Linear(64 * 8 * 16, 128)  # Зависит от размера входа
+        self.fc2 = nn.Linear(128, embedding_dim)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))
+
+        x = x.view(x.size(0), -1)  # Flatten
+        x = F.relu(self.fc1(x))
+        x = F.normalize(self.fc2(x), p=2, dim=1)  # Нормализация эмбеддинга
+        return x
+
 def ChooseModel(model_name: str):
     if model_name == "KorNet":
         return KorNet().cuda()
     elif model_name == "OneShotNet":
         return OneShotNet().cuda()
+    elif model_name == "Light":
+        return LightweightEmbeddingNet().cuda()
     else:
         print("Model is not defined!!!")
         exit(-1)
