@@ -3,6 +3,7 @@ import os, time
 import os.path as op
 from datetime import datetime
 import cv2
+from itertools import cycle
 
 import torch
 import matplotlib.pyplot as plt
@@ -160,62 +161,66 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
     if save_ideals:
         ideals = (ideals.T * counter).T
 
-    num_iters = config["batch_settings"]["train"]["iterations"]
-    mb_size = config["minibatch_size"]
-    pbar = tqdm(range(num_iters))
-    for idx in pbar:
-        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+    train_iterator = cycle(train_loader)
+    batch_count = config["batch_settings"]["train"]["iterations"]
+    elements_per_batch = config["batch_settings"]["train"]["elements_per_batch"]
+    minibatch_size = config["minibatch_size"]
+    pbar = tqdm(range(batch_count), desc="Batches")
 
-    # pbar = tqdm(train_loader)
-    # for idx, mb in enumerate(pbar):
+    for idx, b in enumerate(pbar):
+        cur_batch = next(train_iterator)
+        print(len(cur_batch['image']))
+        exit(-1)
+        for start in range(0, elements_per_batch, minibatch_size):
+            minibatch_img = cur_batch['image'][start:start + minibatch_size]
+            minibatch_lbl = cur_batch['label'][start:start + minibatch_size]
+            size = len(minibatch_img)
+            img_out, lbl_out = [None] * minibatch_size, [None] * minibatch_size
+            """
+            for img_id in range(size):
+                img = minibatch_img[img_id].cuda()
+                lbl = minibatch_lbl[img_id].cuda()
+                out = recognizer(img)
 
-        size = len(mb['image'])
-        img_out, lbl_out = [None] * size, [None] * size
+                img_out[img_id] = out
+                lbl_out[img_id] = lbl
 
-        for img_id in range(size):
-            img = mb['image'][img_id].cuda()
-            lbl = mb['label'][img_id].cuda()
-            out = recognizer(img)
+                if idx <= 10 and config["save_images"]:
+                    save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
+                                                    str(int(lbl[0])) + '_' + str(e) + '.png'))
 
-            img_out[img_id] = out
-            lbl_out[img_id] = lbl
+                if save_ideals:
+                    # ideals[lbl] += out.detach()
+                    # counter[lbl] += 1
+                    ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
+                    counter += torch.bincount(lbl, minlength=ideals.size(0))
 
-            if idx <= 10 and config["save_images"]:
-                save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
-                                                str(int(lbl[0])) + '_' + str(e) + '.png'))
+                    # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
+                    dists.scatter_add_(0, lbl,
+                                       torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
 
-            if save_ideals:
-                # ideals[lbl] += out.detach()
-                # counter[lbl] += 1
-                ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
-                counter += torch.bincount(lbl, minlength=ideals.size(0))
+            if loss_type == "triplet":
+                cur_loss = loss(img_out[0], img_out[1], img_out[2])
+            elif loss_type == "contrastive":
+                cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
+            elif loss_type == "metric":
+                cur_loss = loss(img_out[0], img_out[1], img_out[2],
+                                ideals[lbl_out[0]], ideals[lbl_out[1]], ideals[lbl_out[2]])
+            elif loss_type == "BCE":
+                cur_loss = loss()
+            else:
+                print('No type!')
+                exit(-1)
+            
+            optimizer.zero_grad()
+            cur_loss.backward()
+            optimizer.step()
 
-                # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
-                dists.scatter_add_(0, lbl,
-                                   torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
+            train_loss += cur_loss.item()
 
-        if loss_type == "triplet":
-            cur_loss = loss(img_out[0], img_out[1], img_out[2])
-        elif loss_type == "contrastive":
-            cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
-        elif loss_type == "metric":
-            cur_loss = loss(img_out[0], img_out[1], img_out[2],
-                            ideals[lbl_out[0]], ideals[lbl_out[1]], ideals[lbl_out[2]])
-        elif loss_type == "BCE":
-            cur_loss = loss()
-        else:
-            print('No type!')
-            exit(-1)
-
-        optimizer.zero_grad()
-        cur_loss.backward()
-        optimizer.step()
-
-        train_loss += cur_loss.item()
-
-        # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
-        pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
-
+            # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+            pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+            """
     if save_ideals:
         ideals = torch.div(ideals.T, counter).T
 
@@ -368,21 +373,19 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
 
         test_loss = 0.0
-        to_test = True
-        # if to_test:
-        #     go_metric_test(valid_loader, config, recognizer, loss, train_loss, save_im_pt, e, metric_type)
-        #
-        #     print(
-        #         f'Epoch {e} \t\t Training Loss: {train_loss / len(train_loader)} \t\t Validation Loss: {test_loss / len(valid_loader)}')
-        #
-        #     if min_test_loss > test_loss:
-        #         print(
-        #             f'Validation Loss Decreased({min_test_loss:.6f}--->{test_loss / len(valid_loader):.6f}) \t Saving The Model')
-        #         min_valid_loss = test_loss
+        if test_loader:
+            go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e)
+
+            print(f'Epoch {e} \t\t Test Loss: {test_loss / len(test_loader)}')
+
+            if min_test_loss > test_loss:
+                print(
+                    f'Test Loss Decreased({min_test_loss:.6f}--->{test_loss / len(test_loader):.6f})')
+                min_valid_loss = test_loss
 
         ep_save_pt = op.join(save_pt, str(e))
         if not os.path.exists(ep_save_pt):
-            os.mkdir(ep_save_pt)
+            os.makedirs(ep_save_pt)
 
         start_time = time.time()
         # print('Started updating rules!')
