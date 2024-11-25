@@ -315,6 +315,8 @@ class MOT_Triplet(Dataset, TripletDataset):
         self.type = cfg['loss_settings']['type']
         self.data_dir = cfg[dataset_type]['path']
         self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
+        self.elements_per_batch = cfg['batch_settings'][dataset_type]['elements_per_batch']
+        self.batch_count = cfg['batch_settings'][dataset_type]['iterations']
 
         self.clusters = []
         self.probs_vec = None
@@ -325,9 +327,10 @@ class MOT_Triplet(Dataset, TripletDataset):
             self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
             self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
 
-            self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
-            self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
-            self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
+            if self.negative_mode == "auto_clusters":
+                self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
+                self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
+                self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
 
         if "alphabet" in cfg:
             self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
@@ -351,7 +354,7 @@ class MOT_Triplet(Dataset, TripletDataset):
 
         transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((64, 128))
+            torchvision.transforms.Resize((64, 128), antialias=False)
         ])
 
         triplet_imgs, triplet_lbls = [], []
@@ -361,22 +364,19 @@ class MOT_Triplet(Dataset, TripletDataset):
 
             # image = read_image(file, ImageReadMode.GRAY)
             image = Image.open(file)
-
+            # print(image.size)
             triplet_imgs.append(transform(image))
             triplet_lbls.append(torch.tensor(c))
+        # print(idx)
 
-        sample = {
-            "image": triplet_imgs,
-            "label": triplet_lbls
-        }
+        return {"image": torch.stack(triplet_imgs), "label": torch.stack(triplet_lbls)}
 
-        return sample
+    def __len__(self) -> int:
+        return  self.batch_count * self.elements_per_batch # len(self.all_files)
 
     def get_alph(self) -> list:
         return self.alphabet
 
-    def __len__(self) -> int:
-        return len(self.all_files)
 
 
 class OmniglotOneShot(Dataset):
@@ -408,7 +408,7 @@ class OmniglotOneShot(Dataset):
 
             transform = torchvision.transforms.Compose([
                 torchvision.transforms.ToTensor(),
-                torchvision.transforms.Resize((37, 37))
+                torchvision.transforms.Resize((37, 37), antialias=None)
             ])
 
             files_training = [transform(Image.open(op.join(self.data_dir, folder, 'training', fi)).convert('L')) for fi
@@ -483,7 +483,7 @@ class OmniglotPair(Dataset, PairDataset):
 
         convert_transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((37, 37))
+            torchvision.transforms.Resize((37, 37), antialias=None)
         ])
 
         pair_imgs, pair_lbls = [], []
@@ -553,7 +553,7 @@ class OmniglotTriplet(Dataset, TripletDataset):
 
         transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((37, 37))
+            torchvision.transforms.Resize((37, 37), antialias=None)
         ])
 
         triplet_imgs, triplet_lbls = [], []

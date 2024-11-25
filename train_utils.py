@@ -3,8 +3,7 @@ import os, time
 import os.path as op
 from datetime import datetime
 import cv2
-from itertools import cycle
-
+from itertools import cycle, islice
 import torch
 import matplotlib.pyplot as plt
 from jinja2.optimizer import optimize
@@ -15,6 +14,7 @@ from torch import nn
 import torchvision
 from torchvision.utils import save_image
 from eval_model import *
+
 
 def _g(w, h, x, y, c, n, i):
     return ((c * h + y) * w + x) * n + i
@@ -66,6 +66,7 @@ def Dataloader_by_Index(data_loader, target=0):
         return data
     return None
 
+
 def read_annotations(file_path):
     """
     Read markup from MOT format file.
@@ -81,6 +82,7 @@ def read_annotations(file_path):
             annotations.append((frame_id, object_id, x, y, w, h))
     return annotations
 
+
 def ChooseOptimizer(cfg, model):
     if cfg["type"] == "Adam":
         return torch.optim.Adam(model.parameters(), lr=cfg["lr"])
@@ -89,6 +91,7 @@ def ChooseOptimizer(cfg, model):
     else:
         print("Unknown optimizer type!")
         return None
+
 
 def ChooseLoss(cfg):
     loss_type = cfg["type"]
@@ -106,6 +109,7 @@ def ChooseLoss(cfg):
         print('No Loss found!')
         exit(-1)
     return loss
+
 
 class ContrastiveLoss(torch.nn.Module):
     def __init__(self, margin):
@@ -149,7 +153,7 @@ class MetricLoss(torch.nn.Module):
         triplet_loss = nn.TripletMarginLoss()
 
         g1 = ro * d_AP
-        g2 = tau * f(d_AP - d_AN + self.margin) # triplet_loss(anc, pos, neg) #
+        g2 = tau * f(d_AP - d_AN + self.margin)  # triplet_loss(anc, pos, neg) #
         g3 = xi * (d_AIdeal + d_PIdeal + d_NIdeal) / 3.0
 
         loss_metric = (g1 * g1) + (g2 * g2) + (g3 * g3)
@@ -161,43 +165,44 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
     if save_ideals:
         ideals = (ideals.T * counter).T
 
-    train_iterator = cycle(train_loader)
     batch_count = config["batch_settings"]["train"]["iterations"]
     elements_per_batch = config["batch_settings"]["train"]["elements_per_batch"]
     minibatch_size = config["minibatch_size"]
-    pbar = tqdm(range(batch_count), desc="Batches")
 
-    for idx, b in enumerate(pbar):
-        cur_batch = next(train_iterator)
-        print(len(cur_batch['image']))
-        exit(-1)
-        for start in range(0, elements_per_batch, minibatch_size):
-            minibatch_img = cur_batch['image'][start:start + minibatch_size]
-            minibatch_lbl = cur_batch['label'][start:start + minibatch_size]
-            size = len(minibatch_img)
-            img_out, lbl_out = [None] * minibatch_size, [None] * minibatch_size
-            """
+    pbar = tqdm(train_loader, desc=f"Epoch {e}")
+    for idx, cur_batch in enumerate(pbar):
+        batch_img = cur_batch['image'].to(device='cuda', non_blocking=True)
+        batch_lbl = cur_batch['label'].to(device='cuda', non_blocking=True)
+
+        minibatch_imgs = torch.split(batch_img, minibatch_size)
+        minibatch_lbls = torch.split(batch_lbl, minibatch_size)
+        for mb_img, mb_lbl in zip(minibatch_imgs, minibatch_lbls):
+
+            size = 3 # len(mb_img)
+            img_out, lbl_out = [None] * size, [None] * size
+
             for img_id in range(size):
-                img = minibatch_img[img_id].cuda()
-                lbl = minibatch_lbl[img_id].cuda()
-                out = recognizer(img)
+                img = mb_img[:,img_id]
+                lbl = mb_lbl[:,img_id]
 
+                out = recognizer(img)
+                # print(out.size())
                 img_out[img_id] = out
                 lbl_out[img_id] = lbl
 
-                if idx <= 10 and config["save_images"]:
-                    save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
-                                                    str(int(lbl[0])) + '_' + str(e) + '.png'))
+                # if idx <= 10 and config["save_images"]:
+                #     save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
+                #                                     str(int(lbl[0])) + '_' + str(e) + '.png'))
 
-                if save_ideals:
-                    # ideals[lbl] += out.detach()
-                    # counter[lbl] += 1
-                    ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
-                    counter += torch.bincount(lbl, minlength=ideals.size(0))
-
-                    # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
-                    dists.scatter_add_(0, lbl,
-                                       torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
+                # if save_ideals:
+                #     # ideals[lbl] += out.detach()
+                #     # counter[lbl] += 1
+                #     ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
+                #     counter += torch.bincount(lbl, minlength=ideals.size(0))
+                #
+                #     # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
+                #     dists.scatter_add_(0, lbl,
+                #                        torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
 
             if loss_type == "triplet":
                 cur_loss = loss(img_out[0], img_out[1], img_out[2])
@@ -220,43 +225,67 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
 
             # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
             pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
-            """
+
     if save_ideals:
         ideals = torch.div(ideals.T, counter).T
 
     return train_loss
 
 
-def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e, metric_type):
-    # recognizer.eval()
-    pbar = tqdm(range(config["batch_settings"]["iterations"]))
-    for it in pbar:
-        mb = test_loader[torch.randint(len(test_loader), size=(1,)).item()]
-        size = len(mb['image'])
-        img_out, lbl_out = [None] * size, [None] * size
+def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e, loss_type):
+    batch_count = config["batch_settings"]["train"]["iterations"]
+    elements_per_batch = config["batch_settings"]["train"]["elements_per_batch"]
+    minibatch_size = config["minibatch_size"]
 
-        for img_id in range(size):
-            img = mb['image'][img_id].cuda()
-            lbl = mb['label'][img_id].cuda()
-            out = recognizer(img)
+    pbar = tqdm(test_loader, desc=f"Epoch {e}")
+    for idx, cur_batch in enumerate(pbar):
+        batch_img = cur_batch['image'].to(device='cuda', non_blocking=True)
+        batch_lbl = cur_batch['label'].to(device='cuda', non_blocking=True)
 
-            img_out[img_id] = out
-            lbl_out[img_id] = lbl
+        minibatch_imgs = torch.split(batch_img, minibatch_size)
+        minibatch_lbls = torch.split(batch_lbl, minibatch_size)
 
-            if it == 0 and config["save_images"]:
-                save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_test_' +
-                                                str(int(lbl[0])) + '_' + str(e) + '.png'))
+        for mb_img, mb_lbl in zip(minibatch_imgs, minibatch_lbls):
+            anc_img = mb_img[:, 0]
+            anc_lbl = mb_lbl[:, 0]
+            pos_img = mb_img[:, 1]
+            pos_lbl = mb_lbl[:, 1]
+            neg_img = mb_img[:, 2]
+            neg_lbl = mb_lbl[:, 2]
 
-        if metric_type == "triplet":
-            cur_loss = loss(img_out[0], img_out[1], img_out[2])
-        elif metric_type == "contrastive":
-            cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
-        else:
-            print('No type!')
-            exit(-1)
+            out1 = recognizer(anc_img)
+            out2 = recognizer(pos_img)
+            out3 = recognizer(neg_img)
 
-        test_loss += cur_loss.item()
-        pbar.set_description("epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
+            # size = 3  # len(mb_img)
+            # img_out, lbl_out = [None] * size, [None] * size
+
+            # for img_id in range(size):
+            #     img = mb_img[:, img_id]
+            #     lbl = mb_lbl[:, img_id]
+
+                # out = recognizer(img)
+                # print(out.size())
+                # img_out[img_id] = out
+                # lbl_out[img_id] = lbl
+
+            if loss_type == "triplet":
+                cur_loss = loss(out1, out2, out3)
+            # elif loss_type == "contrastive":
+            #     cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
+            # elif loss_type == "metric":
+            #     cur_loss = loss(img_out[0], img_out[1], img_out[2],
+            #                     ideals[lbl_out[0]], ideals[lbl_out[1]], ideals[lbl_out[2]])
+            # elif loss_type == "BCE":
+            #     cur_loss = loss()
+            # else:
+            #     print('No type!')
+            #     exit(-1)
+
+            test_loss += cur_loss.item()
+
+            # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+            pbar.set_description("epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
 
 def go_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, loss_type):
     num_iters = config["batch_settings"]["iterations"]
@@ -319,21 +348,23 @@ def go_train(train_loader, config, recognizer, optimizer, loss, train_loss, save
 
 def run_training(config, recognizer, optimizer, train_dataset, test_dataset, valid_dataset, save_pt, save_im_pt,
                  start_ep):
+
     train_loader = DataLoader(dataset=train_dataset,
                               batch_size=config['batch_settings']['train']['elements_per_batch'],
-                              shuffle=True,
-                              num_workers=8)
+                              shuffle=False,
+                              num_workers=0)  #os.cpu_count() - 1)
 
     test_loader = None
     if test_dataset:
         test_loader = DataLoader(dataset=test_dataset,
                                  batch_size=config['batch_settings']['test']['elements_per_batch'],
-                                 shuffle=True,
-                                 num_workers=8)
+                                 shuffle=False,
+                                 num_workers=0)
+
     valid_loader = None
     if valid_dataset:
         valid_loader = DataLoader(dataset=valid_dataset,
-                                  batch_size=['batch_settings']['valid']['elements_per_batch'],
+                                  batch_size=config['batch_settings']['valid']['elements_per_batch'],
                                   shuffle=False,
                                   num_workers=8)
 
@@ -366,15 +397,12 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
         train_loss = 0.0
         start_time = time.time()
 
-
-
         train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
                                      save_ideals, ideals, counter, dists, loss_type)
 
-
         test_loss = 0.0
         if test_loader:
-            go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e)
+            go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e, loss_type)
 
             print(f'Epoch {e} \t\t Test Loss: {test_loss / len(test_loader)}')
 
