@@ -6,7 +6,6 @@ from torchvision.transforms.functional import InterpolationMode
 import torch.nn.functional as F
 
 import torchreid
-from torchreid.models import build_model
 from torchvision import models
 from torch.hub import load_state_dict_from_url
 
@@ -360,16 +359,22 @@ class LightweightEmbeddingNet2(nn.Module):
         # x = F.normalize(self.fc2(x), p=2, dim=1)
         return x
 
-class ResNet50FeatureExtractor(nn.Module):
-    def __init__(self, embedding_dim=64, pretrained=True):
-        super(ResNet50FeatureExtractor, self).__init__()
-        # Загружаем ResNet-50
+class ResNet50(nn.Module):
+    def __init__(self, image_size, pretrained=True):
+        super(ResNet50, self).__init__()
         self.resnet = models.resnet50(pretrained=pretrained)
 
         self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
 
-        self.fc = nn.Linear(2048, embedding_dim)
+        dummy_input = torch.zeros(1, image_size['channels'], image_size['height'], image_size['width'])
+        flattened_size = self._get_flattened_size(dummy_input)
+
+        self.fc = nn.Linear(flattened_size, image_size['output_dim'])
         self.normalize = nn.functional.normalize
+
+    def _get_flattened_size(self, x):
+        x = self.resnet(x)
+        return x.view(1, -1).size(1)
 
     def forward(self, x):
         x = self.resnet(x).squeeze()
@@ -377,39 +382,45 @@ class ResNet50FeatureExtractor(nn.Module):
         x = self.normalize(x, p=2, dim=1)
         return x
 
-class MobileNetV2FeatureExtractor(nn.Module):
-    def __init__(self, embedding_dim=64, pretrained=True):
-        super(MobileNetV2FeatureExtractor, self).__init__()
-        # Загружаем MobileNet-V2
+class MobileNetV2(nn.Module):
+    def __init__(self, image_size, pretrained=True):
+        super(MobileNetV2, self).__init__()
         self.mobilenet = models.mobilenet_v2(pretrained=pretrained)
-        # Убираем классификационный слой
+
         self.mobilenet = nn.Sequential(*list(self.mobilenet.children())[:-1])
-        # Новый слой для эмбеддинга
-        self.fc = nn.Linear(1280, embedding_dim)
+
+        dummy_input = torch.zeros(1, image_size['channels'], image_size['height'], image_size['width'])
+        flattened_size = self._get_flattened_size(dummy_input)
+
+        self.fc = nn.Linear(flattened_size, image_size['output_dim'])
         self.normalize = nn.functional.normalize
 
+    def _get_flattened_size(self, x):
+        x = self.mobilenet(x)
+        print(x.shape)
+        return x.view(1, -1).size(1)
+
     def forward(self, x):
-        # Извлекаем признаки с помощью MobileNet
         x = self.mobilenet(x).squeeze()
         x = self.fc(x)
         x = self.normalize(x, p=2, dim=1)
         return x
 
 
-class OSNetFeatureExtractor(nn.Module):
-    def __init__(self, embedding_dim=64, pretrained=True):
-        super(OSNetFeatureExtractor, self).__init__()
-        # Создаем OSNet-AIN
-        self.osnet = build_model('osnet_ain_x1_0', num_classes=1000, pretrained=pretrained)
-        # Заменяем классификационный слой
-        self.osnet.fc = nn.Linear(512, embedding_dim)
-        self.normalize = nn.functional.normalize
-
-    def forward(self, x):
-        # Извлекаем признаки с помощью OSNet
-        x = self.osnet(x)
-        x = self.normalize(x, p=2, dim=1)
-        return x
+# class OSNetFeatureExtractor(nn.Module):
+#     def __init__(self, embedding_dim=64, pretrained=True):
+#         super(OSNetFeatureExtractor, self).__init__()
+#         # Создаем OSNet-AIN
+#         self.osnet = build_model('osnet_ain_x1_0', num_classes=1000, pretrained=pretrained)
+#         # Заменяем классификационный слой
+#         self.osnet.fc = nn.Linear(512, embedding_dim)
+#         self.normalize = nn.functional.normalize
+#
+#     def forward(self, x):
+#         # Извлекаем признаки с помощью OSNet
+#         x = self.osnet(x)
+#         x = self.normalize(x, p=2, dim=1)
+#         return x
 
 def ChooseModel(model_name: str, image_size: dict):
     if model_name == "KorNet":
@@ -418,6 +429,10 @@ def ChooseModel(model_name: str, image_size: dict):
         return OneShotNet().cuda()
     elif model_name == "Light":
         return LightweightEmbeddingNet2(image_size).cuda()
+    elif model_name == "ResNet50":
+        return ResNet50(image_size).cuda()
+    elif model_name == "MobileNet":
+        return MobileNetV2(image_size).cuda()
     else:
         print("Model is not defined!!!")
         exit(-1)
