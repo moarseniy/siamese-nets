@@ -24,8 +24,6 @@ import random
 
 from PIL import Image
 
-from train_utils import read_annotations
-
 from mining_methods import generate_clusters
 from mining_methods import merge_clusters
 from mining_methods import save_clusters
@@ -93,9 +91,13 @@ class SiameseDataset:
         return pos_c, pos_id
 
     def create_positive(self, pos_c, pos_id):
-        anc_id = np.random.randint(len(self.samples_per_class[pos_c]))
+        num_samples = len(self.samples_per_class[pos_c])
+        if num_samples == 1:
+            return pos_id
+
+        anc_id = np.random.randint(num_samples)
         while anc_id == pos_id:
-            anc_id = np.random.randint(len(self.samples_per_class[pos_c]))
+            anc_id = np.random.randint(num_samples)
         return anc_id
 
     def create_negative_random(self, pos_c):
@@ -312,6 +314,8 @@ class MOT_Triplet(Dataset, TripletDataset):
         super().__init__()
         self.transforms = transforms
 
+        self.image_size = cfg['image_size']
+
         self.type = cfg['loss_settings']['type']
         self.data_dir = cfg[dataset_type]['path']
         self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
@@ -354,7 +358,8 @@ class MOT_Triplet(Dataset, TripletDataset):
 
         transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((64, 128), antialias=False)
+            torchvision.transforms.Resize((self.image_size['height'], self.image_size['width']), antialias=False)
+            # torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
         triplet_imgs, triplet_lbls = [], []
@@ -365,14 +370,14 @@ class MOT_Triplet(Dataset, TripletDataset):
             # image = read_image(file, ImageReadMode.GRAY)
             image = Image.open(file)
             # print(image.size)
-            triplet_imgs.append(transform(image))
+            triplet_imgs.append(transform(self.transforms(image)))
             triplet_lbls.append(torch.tensor(c))
         # print(idx)
 
         return {"image": torch.stack(triplet_imgs), "label": torch.stack(triplet_lbls)}
 
     def __len__(self) -> int:
-        return  self.batch_count * self.elements_per_batch # len(self.all_files)
+        return self.batch_count * self.elements_per_batch # len(self.all_files)
 
     def get_alph(self) -> list:
         return self.alphabet

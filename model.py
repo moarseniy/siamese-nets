@@ -1,7 +1,88 @@
 import torch
 from torch import nn
 from torchvision.transforms import v2
+import torchvision.transforms as T
+from torchvision.transforms.functional import InterpolationMode
 import torch.nn.functional as F
+
+import torchreid
+from torchreid.models import build_model
+from torchvision import models
+from torch.hub import load_state_dict_from_url
+
+def print_model_info(model, image_size, minibatch_size):
+    input_tensor = torch.randn(minibatch_size, image_size['channels'], image_size['height'], image_size['width']).cuda()
+    total_ops = 0
+    total_params = 0
+    layer_info = []
+    print(f"Input shape: {input_tensor.shape}")
+
+    for name, layer in model.named_children():
+        x = input_tensor
+
+        if isinstance(layer, nn.Linear):
+            x = x.view(x.size(0), -1)  # Flatten
+            # print(f"  Shape after flattening: {x.shape}")
+
+        x = layer(x)
+
+        output_shape = x.shape
+        print(f"\nLayer: {name}")
+        print(f"  Output shape: {output_shape}")
+
+        ops, params, weights = count_layer_ops_and_params(layer, x.shape)
+        total_ops += ops
+        total_params += params
+
+        layer_info.append((name, ops, params, output_shape))
+
+        # print(f"Operations: {ops:,} | Weights: {weights:,} | Total params: {params:,}")
+
+        input_tensor = x
+
+    for name, ops, params, output_shape in layer_info:
+        print(f"Layer: {name}")
+        print(f"  Output shape: {output_shape}")
+        print(f"  Operations: {ops:,} ({ops / total_ops * 100:.2f}%)")
+        print(f"  Parameters: {params:,} ({params / total_params * 100:.2f}%)")
+        print()
+
+    print("Summary:")
+    print(f"  Total operations: {total_ops:,}")
+    print(f"  Total parameters: {total_params:,}")
+
+
+def count_layer_ops_and_params(layer, output_shape):
+    ops = 0
+    params = 0
+    weights = 0
+
+    if isinstance(layer, nn.Conv2d):
+        out_channels, in_channels, kernel_height, kernel_width = layer.weight.shape
+        output_height, output_width = output_shape[2], output_shape[3]
+        ops = output_height * output_width * kernel_height * kernel_width * in_channels * out_channels
+        params = out_channels * (in_channels * kernel_height * kernel_width) + out_channels
+        weights = out_channels * (in_channels * kernel_height * kernel_width)
+
+    elif isinstance(layer, nn.Linear):
+        in_features, out_features = layer.weight.shape
+        ops = in_features * out_features
+        params = in_features * out_features + out_features
+        weights = in_features * out_features
+
+    elif isinstance(layer, nn.BatchNorm2d):
+        out_channels = layer.weight.shape[0]
+        ops = 2 * out_channels
+        params = 2 * out_channels
+        weights = 2 * out_channels
+
+    elif isinstance(layer, nn.MaxPool2d):
+        ops = 0
+        params = 0
+        weights = 0
+
+    return ops, params, weights
+
 
 class SymReLU(torch.nn.Module):
     def __init__(self):
@@ -46,6 +127,32 @@ def prepare_augmentation():
             # 													 fill=1)], p=1.0)
         ]
     )
+
+    return T.Compose([
+        # Геометрические трансформации
+        T.RandomHorizontalFlip(p=0.5)  # Горизонтальное отражение
+        # T.RandomAffine(
+        #     degrees=10,  # Поворот в диапазоне ±10°
+        #     translate=(0.1, 0.1),  # Сдвиг до 10% от размеров изображения
+        #     scale=(0.9, 1.1),  # Изменение масштаба на ±10%
+        #     shear=5,  # Сдвиг угла на ±5°
+        #     interpolation=InterpolationMode.BILINEAR,  # Интерполяция
+        #     fill=0  # Заполнение черным
+        # ),
+        # Цветовые трансформации
+        # T.ColorJitter(
+        #     brightness=0.2,  # Изменение яркости на ±20%
+        #     contrast=0.2,  # Изменение контраста на ±20%
+        #     saturation=0.2,  # Изменение насыщенности на ±20%
+        #     hue=0.05  # Изменение оттенка на ±5%
+        # )
+        # Симуляция размытия
+        # T.RandomApply([T.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], p=0.2)
+        # Преобразование в тензор
+        # T.ToTensor()
+        # Нормализация
+        # T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
 
     return transforms
 
@@ -171,36 +278,146 @@ class OneShotNet(nn.Module):
 
 
 class LightweightEmbeddingNet(nn.Module):
-    def __init__(self, embedding_dim=64):
+    def __init__(self, image_size):
         super(LightweightEmbeddingNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1)
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
         self.bn1 = nn.BatchNorm2d(16)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
         self.bn2 = nn.BatchNorm2d(32)
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
         self.bn3 = nn.BatchNorm2d(64)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.pool = nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2))
 
-        self.fc1 = nn.Linear(64 * 8 * 16, 128)  # Зависит от размера входа
-        self.fc2 = nn.Linear(128, embedding_dim)
+        # Compute flattened size dynamically based on input size
+        dummy_input = torch.zeros(1, image_size['channels'], image_size['height'], image_size['width'])
+        flattened_size = self._get_flattened_size(dummy_input)
 
-    def forward(self, x):
+        self.fc1 = nn.Linear(flattened_size, 128)
+        self.fc2 = nn.Linear(128, image_size['output_dim'])
+
+    def backbone(self, x):
         x = self.pool(F.relu(self.bn1(self.conv1(x))))
         x = self.pool(F.relu(self.bn2(self.conv2(x))))
         x = self.pool(F.relu(self.bn3(self.conv3(x))))
-
-        x = x.view(x.size(0), -1)  # Flatten
-        x = F.relu(self.fc1(x))
-        x = F.normalize(self.fc2(x), p=2, dim=1)  # Нормализация эмбеддинга
         return x
 
-def ChooseModel(model_name: str):
+    def _get_flattened_size(self, x):
+        x = self.backbone(x)
+        # print("backbone", x.shape)
+        return x.view(1, -1).size(1)
+
+    def forward(self, x):
+        x = self.backbone(x)
+
+        x = x.view(x.size(0), -1)  # Flatten
+
+        x = F.relu(self.fc1(x))
+        x = F.normalize(self.fc2(x), p=2, dim=1)
+        return x
+
+
+class LightweightEmbeddingNet2(nn.Module):
+    def __init__(self, image_size):
+        super(LightweightEmbeddingNet2, self).__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.bn1 = nn.BatchNorm2d(16)
+        self.conv2 = nn.Conv2d(16, 16, kernel_size=(2, 2), stride=(2, 2), padding=(0, 0))
+        self.bn2 = nn.BatchNorm2d(16)
+        self.conv3 = nn.Conv2d(16, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.bn3 = nn.BatchNorm2d(32)
+        self.conv4 = nn.Conv2d(32, 32, kernel_size=(2, 2), stride=(2, 2), padding=(0, 0))
+        self.bn4 = nn.BatchNorm2d(32)
+        self.conv5 = nn.Conv2d(32, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.bn5 = nn.BatchNorm2d(64)
+        self.pool = nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2))
+
+        # Compute flattened size dynamically based on input size
+        dummy_input = torch.zeros(1, image_size['channels'], image_size['height'], image_size['width'])
+        flattened_size = self._get_flattened_size(dummy_input)
+
+        self.fc1 = nn.Linear(flattened_size, image_size['output_dim'])
+        # self.fc2 = nn.Linear(256, image_size['output_dim'])
+
+    def backbone(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = F.relu(self.bn4(self.conv4(x)))
+        x = F.relu(self.bn5(self.conv5(x)))
+        return x
+
+    def _get_flattened_size(self, x):
+        x = self.backbone(x)
+        # print("backbone", x.shape)
+        return x.view(1, -1).size(1)
+
+    def forward(self, x):
+        x = self.backbone(x)
+
+        x = x.view(x.size(0), -1)  # Flatten
+
+        x = self.fc1(x)
+        # x = F.normalize(self.fc2(x), p=2, dim=1)
+        return x
+
+class ResNet50FeatureExtractor(nn.Module):
+    def __init__(self, embedding_dim=64, pretrained=True):
+        super(ResNet50FeatureExtractor, self).__init__()
+        # Загружаем ResNet-50
+        self.resnet = models.resnet50(pretrained=pretrained)
+
+        self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
+
+        self.fc = nn.Linear(2048, embedding_dim)
+        self.normalize = nn.functional.normalize
+
+    def forward(self, x):
+        x = self.resnet(x).squeeze()
+        x = self.fc(x)
+        x = self.normalize(x, p=2, dim=1)
+        return x
+
+class MobileNetV2FeatureExtractor(nn.Module):
+    def __init__(self, embedding_dim=64, pretrained=True):
+        super(MobileNetV2FeatureExtractor, self).__init__()
+        # Загружаем MobileNet-V2
+        self.mobilenet = models.mobilenet_v2(pretrained=pretrained)
+        # Убираем классификационный слой
+        self.mobilenet = nn.Sequential(*list(self.mobilenet.children())[:-1])
+        # Новый слой для эмбеддинга
+        self.fc = nn.Linear(1280, embedding_dim)
+        self.normalize = nn.functional.normalize
+
+    def forward(self, x):
+        # Извлекаем признаки с помощью MobileNet
+        x = self.mobilenet(x).squeeze()
+        x = self.fc(x)
+        x = self.normalize(x, p=2, dim=1)
+        return x
+
+
+class OSNetFeatureExtractor(nn.Module):
+    def __init__(self, embedding_dim=64, pretrained=True):
+        super(OSNetFeatureExtractor, self).__init__()
+        # Создаем OSNet-AIN
+        self.osnet = build_model('osnet_ain_x1_0', num_classes=1000, pretrained=pretrained)
+        # Заменяем классификационный слой
+        self.osnet.fc = nn.Linear(512, embedding_dim)
+        self.normalize = nn.functional.normalize
+
+    def forward(self, x):
+        # Извлекаем признаки с помощью OSNet
+        x = self.osnet(x)
+        x = self.normalize(x, p=2, dim=1)
+        return x
+
+def ChooseModel(model_name: str, image_size: dict):
     if model_name == "KorNet":
         return KorNet().cuda()
     elif model_name == "OneShotNet":
         return OneShotNet().cuda()
     elif model_name == "Light":
-        return LightweightEmbeddingNet().cuda()
+        return LightweightEmbeddingNet2(image_size).cuda()
     else:
         print("Model is not defined!!!")
         exit(-1)

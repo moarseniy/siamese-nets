@@ -4,48 +4,69 @@
     "model_name": "Light",
     "train": {
       "name": "MOT",
-      "path": "/home/arseniy/data/out/MOT17Det/train"
+      "path": "/home/arseniy/hackathon/datasets/retrieve/MOT20/train"
     },
     "test": {
       "name": "MOT",
-      "path": "/home/arseniy/data/out/MOT20/train"
+      "path": "/home/arseniy/hackathon/datasets/retrieve/MOT17Det/train"
     },
-    "checkpoint_pt": "/home/arseniy/data/out/siamese_out/cc",
-    "images_pt": "/home/arseniy/data/out/siamese_out/im",
+    "image_size": {"width": 48, "height": 96, "channels": 3, "output_dim": 64},
+    "checkpoint_pt": "/home/arseniy/siamese_out/cc",
+    "images_pt": "/home/arseniy/siamese_out/im",
     "alph_pt": "",
     "device": 0,
     "file_to_start": "",
-    "save_images": true,
+    "save_images": false,
     "save_ideals": false,
-    "minibatch_size": 2,
+    "minibatch_size": 512,
     "description": "type=triplet, alpha_margin=12, pm=rand, nm=rand",
     "batch_settings": {
       "train": {
-        "elements_per_batch": 4,
-        "iterations": 2,
+        "elements_per_batch": 10240,
+        "iterations": 10,
         "gen_imp_ratio": 0.3,
         "positive_mode": "random",
         "negative_mode": "random",
-        "inner_imp_prob": 0.2,
-        "raw_clusters": 1000,
-        "cluster_max_size": 200,
-        "sym_probs_gamma": 2.0,
-        "merge_w": 0.0,
-        "make_clust_on_ep": 1
+        "auto_clusters": {
+          "inner_imp_prob": 0.2,
+          "raw_clusters": 1000,
+          "cluster_max_size": 200,
+          "make_clust_on_ep": 1
+        },
+        "auto_sym_probs": {
+          "sym_probs_gamma": 2.0,
+          "merge_w": 0.0
+        }
       },
       "test": {
-        "elements_per_batch": 4,
-        "iterations": 2,
-        "gen_imp_ratio": 0.3
+        "elements_per_batch": 1024,
+        "iterations": 10,
+        "gen_imp_ratio": 0.3,
+        "positive_mode": "random",
+        "negative_mode": "random",
+        "auto_clusters": {
+          "inner_imp_prob": 0.2,
+          "raw_clusters": 1000,
+          "cluster_max_size": 200,
+          "make_clust_on_ep": 1
+        },
+        "auto_sym_probs": {
+          "sym_probs_gamma": 2.0,
+          "merge_w": 0.0
+        }
       }
     },
     "loss_settings": {
       "type": "triplet",
-      "alpha_margin": 12
+      "alpha_margin": 4
     },
     "optimizer_settings": {
       "type": "Adam",
-      "lr": 1e-2
+      "lr": 3e-3
     }
+  },
+  "augmentation": {
+    "to_use": true,
+    "prob": 0.8
   }
 }

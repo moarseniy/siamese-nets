@@ -31,7 +31,9 @@ if __name__ == "__main__":
         print('No GPU!!!')
         exit(-1)
 
-    model = ChooseModel(cfg['common']["model_name"])
+    model = ChooseModel(cfg['common']["model_name"], cfg['common']['image_size'])
+
+    # print_model_info(model, cfg['common']['image_size'], cfg['common']['minibatch_size'])
 
     start_ep = 0
     if cfg['common']['file_to_start']:
