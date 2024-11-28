@@ -6,35 +6,27 @@ from torchvision.utils import save_image
 from model import *
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-# from dataset import PHD08Dataset
-# from dataset import PHD08ValidDataset
+from dataset import ChooseDataset
 
 
 def validate_with_descrs(config, recognizer, valid_loader, descrs):
     start_time = time.time()
     pbar = tqdm(valid_loader)
 
-    count = 0  # torch.zeros(valid_dataset.get_alph_size()).cuda()
+    count = 0
+    if descrs.max() == descrs.min():
+        print("Descrs is uniform. Check initialization or update logic.")
+
     for idx, mb in enumerate(pbar):
+
+        # print(type(mb['image']), mb['image'].shape)
         img = mb['image'].cuda()
         lbl = mb['label'].cuda()
 
-        if idx < 10 and config['save_images']:
-            save_image(img[0], os.path.join('/home/arseniy/results/out/torch_out', 'out_valid_' + str(idx) + '.png'))
+        # if idx < 10 and config['save_images']:
+            # save_image(img[0], os.path.join('/home/arseniy/results/out/torch_out', 'out_valid_' + str(idx) + '.png'))
 
         data_out = recognizer(img)
-
-        # min_norm = torch.empty(data_out.size()[0]).fill_(1e+10).cuda()
-        # ids = torch.zeros(lbl.size()).cuda()
-        #
-        # i = 0
-        # for j in range(descrs.size()[0]):
-        #     cur_norm = torch.sqrt(torch.sum((data_out - descrs[j]) ** 2, dim=1))
-        #
-        #     temp = cur_norm < min_norm
-        #     min_norm[temp] = cur_norm[temp]
-        #     ids[temp] = torch.tensor(i, dtype=torch.float).cuda()
-        #     i += 1
 
         # Compute Euclidean distances between each vector in data_out and descrs
         distances = torch.cdist(data_out, descrs)
@@ -42,7 +34,7 @@ def validate_with_descrs(config, recognizer, valid_loader, descrs):
         # Find the index of the closest vector in descrs for each vector in data_out
         ids = torch.argmin(distances, dim=1)
 
-        # Optionally, you can also compute the minimum distances
+        # Optionally, can compute the minimum distances
         # min_distances = torch.min(distances, dim=1).values
 
         count += torch.sum((lbl == ids).clone().detach())
@@ -120,7 +112,7 @@ if __name__ == "__main__":
         print("No path for net (file_to_start)")
         exit(0)
 
-    valid_dataset = PHD08ValidDataset(cfg=cfg)
+    valid_dataset = ChooseDataset("valid", cfg['common'], None)
 
     ideals = torch.zeros(len(valid_dataset.get_alphabet()), 25).cuda()
     print('\nAlphabet size: ', len(valid_dataset.get_alphabet()))

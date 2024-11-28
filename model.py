@@ -318,17 +318,17 @@ class LightweightEmbeddingNet(nn.Module):
 class LightweightEmbeddingNet2(nn.Module):
     def __init__(self, image_size):
         super(LightweightEmbeddingNet2, self).__init__()
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=(3, 3), stride=(1, 1), padding=(0, 0))
         self.bn1 = nn.BatchNorm2d(16)
-        self.conv2 = nn.Conv2d(16, 16, kernel_size=(2, 2), stride=(2, 2), padding=(0, 0))
+        self.conv2 = nn.Conv2d(16, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
         self.bn2 = nn.BatchNorm2d(16)
-        self.conv3 = nn.Conv2d(16, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv3 = nn.Conv2d(16, 24, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
         self.bn3 = nn.BatchNorm2d(32)
-        self.conv4 = nn.Conv2d(32, 32, kernel_size=(2, 2), stride=(2, 2), padding=(0, 0))
+        self.conv4 = nn.Conv2d(24, 24, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
         self.bn4 = nn.BatchNorm2d(32)
-        self.conv5 = nn.Conv2d(32, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv5 = nn.Conv2d(24, 24, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
         self.bn5 = nn.BatchNorm2d(64)
-        self.pool = nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2))
+        # self.pool = nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2))
 
         # Compute flattened size dynamically based on input size
         dummy_input = torch.zeros(1, image_size['channels'], image_size['height'], image_size['width'])
@@ -338,11 +338,11 @@ class LightweightEmbeddingNet2(nn.Module):
         # self.fc2 = nn.Linear(256, image_size['output_dim'])
 
     def backbone(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x = F.relu(self.bn4(self.conv4(x)))
-        x = F.relu(self.bn5(self.conv5(x)))
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
         return x
 
     def _get_flattened_size(self, x):
@@ -428,6 +428,8 @@ def ChooseModel(model_name: str, image_size: dict):
     elif model_name == "OneShotNet":
         return OneShotNet().cuda()
     elif model_name == "Light":
+        return LightweightEmbeddingNet(image_size).cuda()
+    elif model_name == "Light2":
         return LightweightEmbeddingNet2(image_size).cuda()
     elif model_name == "ResNet50":
         return ResNet50(image_size).cuda()

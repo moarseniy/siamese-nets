@@ -1,24 +1,24 @@
 {
   "common": {
     "epoch_num": 10000,
-    "model_name": "Light",
+    "model_name": "Light2",
     "train": {
       "name": "MOT",
-      "path": "/home/arseniy/hackathon/datasets/retrieve/MOT20/train"
+      "path": "/home/arseniy/hackathon/datasets/retrieve/train/"
     },
     "test": {
       "name": "MOT",
-      "path": "/home/arseniy/hackathon/datasets/retrieve/MOT17Det/train"
+      "path": "/home/arseniy/hackathon/datasets/retrieve/test/"
     },
-    "image_size": {"width": 48, "height": 96, "channels": 3, "output_dim": 64},
+    "image_size": {"width": 64, "height": 128, "channels": 3, "output_dim": 25},
     "checkpoint_pt": "/home/arseniy/siamese_out/cc",
     "images_pt": "/home/arseniy/siamese_out/im",
     "alph_pt": "",
     "device": 0,
     "file_to_start": "",
-    "save_images": false,
+    "save_images": true,
     "save_ideals": false,
-    "minibatch_size": 512,
+    "minibatch_size": 256,
     "description": "type=triplet, alpha_margin=12, pm=rand, nm=rand",
     "batch_settings": {
       "train": {
@@ -39,7 +39,7 @@
         }
       },
       "test": {
-        "elements_per_batch": 1024,
+        "elements_per_batch": 10240,
         "iterations": 10,
         "gen_imp_ratio": 0.3,
         "positive_mode": "random",
@@ -62,7 +62,7 @@
     },
     "optimizer_settings": {
       "type": "Adam",
-      "lr": 3e-3
+      "lr": 3e-4
     }
   },
   "augmentation": {

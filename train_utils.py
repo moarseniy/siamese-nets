@@ -144,10 +144,36 @@ class MetricLoss(torch.nn.Module):
         return loss_metric.mean()
 
 
+def save_plot(stat, ep_save_pt):
+    plt.figure(figsize=(12, 7))
+    plt.xlabel("Epoch", fontsize=18)
+
+    plt.plot(stat['epochs'], stat['train_losses'], 'o-', label='train loss',
+             ms=4)  # , alpha=0.7, label='0.01', lw=5, mec='b', mew=1, ms=7)
+
+    if stat['test_losses']:
+        plt.plot(stat['epochs'], stat['test_losses'], 'o-.', label='test loss',
+                 ms=4)  # , alpha=0.7, label='0.1', lw=5, mec='b', mew=1, ms=7)
+
+    if stat['acc']:
+        best_id = stat['acc'].index(max(stat['acc']))
+        plt.plot(stat['epochs'], stat['acc'], 'o--',
+                 label='Max accuracy:' + str(stat['acc'][best_id]) + '\nEpoch:' + str(stat['epochs'][best_id]),
+                 ms=4)  # , alpha=0.7, label='0.3', lw=5, mec='b', mew=1, ms=7)
+
+    plt.legend(fontsize=18,
+               ncol=2,  # количество столбцов
+               facecolor='oldlace',  # цвет области
+               edgecolor='black',  # цвет крайней линии
+               title='value',  # заголовок
+               title_fontsize='18'  # размер шрифта заголовка
+               )
+    plt.grid(True)
+    plt.savefig(op.join(ep_save_pt, 'graph.png'))
+
+
 def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
                     save_ideals, ideals, counter, dists, loss_type):
-    if save_ideals:
-        ideals = (ideals.T * counter).T
 
     batch_count = config["batch_settings"]["train"]["iterations"]
     elements_per_batch = config["batch_settings"]["train"]["elements_per_batch"]
@@ -155,12 +181,15 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
 
     pbar = tqdm(train_loader)
     for idx, cur_batch in enumerate(pbar):
-        batch_img = cur_batch['image'].to(device='cuda', non_blocking=True)
-        batch_lbl = cur_batch['label'].to(device='cuda', non_blocking=True)
+        batch_img = cur_batch['image']  #.to(device='cuda', non_blocking=True)
+        batch_lbl = cur_batch['label']  #.to(device='cuda', non_blocking=True)
 
         minibatch_imgs = torch.split(batch_img, minibatch_size)
         minibatch_lbls = torch.split(batch_lbl, minibatch_size)
+
         for mb_idx, (mb_img, mb_lbl) in enumerate(zip(minibatch_imgs, minibatch_lbls)):
+            mb_img = mb_img.to(device='cuda', non_blocking=True)
+            mb_lbl = mb_lbl.to(device='cuda', non_blocking=True)
 
             anc_img = mb_img[:, 0]
             pos_img = mb_img[:, 1]
@@ -176,15 +205,15 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
             pos_out = recognizer(pos_img)
             neg_out = recognizer(neg_img)
 
-            # if save_ideals:
-            #         # ideals[lbl] += out.detach()
-            #         # counter[lbl] += 1
-            #         ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
-            #         counter += torch.bincount(lbl, minlength=ideals.size(0))
-            #
-            #         # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
-            #         dists.scatter_add_(0, lbl,
-            #                            torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
+            if save_ideals:
+                for out, lbl in ((anc_out, anc_lbl), (pos_out, pos_lbl), (neg_out, neg_lbl)):
+
+                    ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
+
+                    counter += torch.bincount(lbl, minlength=ideals.size(0))
+
+                    dists.scatter_add_(0, lbl,
+                                       torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
 
             if config["save_images"] and idx == 0 and mb_idx == 0:
                 save_image(anc_img[0], os.path.join(save_im_pt, str(e) + '_train_anc_' +
@@ -215,9 +244,6 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
 
             # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
             pbar.set_description("Epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
-
-    if save_ideals:
-        ideals = torch.div(ideals.T, counter).T
 
     return train_loss
 
@@ -269,71 +295,12 @@ def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt,
     return test_loss
 
 
-def go_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e, loss_type):
-    num_iters = config["batch_settings"]["iterations"]
-    mb_size = config["minibatch_size"]
-    pbar = tqdm(range(num_iters))
-    for idx in pbar:
-        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
-
-        # pbar = tqdm(train_loader)
-        # for idx, mb in enumerate(pbar):
-
-        size = len(mb['image'])
-        img_out, lbl_out = [None] * size, [None] * size
-
-        for img_id in range(size):
-            img = mb['image'][img_id].cuda()
-            lbl = mb['label'][img_id].cuda()
-            out = recognizer(img)
-
-            img_out[img_id] = out
-            lbl_out[img_id] = lbl
-
-            if idx <= 10 and config["save_images"]:
-                save_image(img[0], os.path.join(save_im_pt, 'out_' + str(img_id) + '_train_' +
-                                                str(int(lbl[0])) + '_' + str(e) + '.png'))
-
-            # ideals[lbl] += out.detach()
-            # counter[lbl] += 1
-            ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
-            counter += torch.bincount(lbl, minlength=ideals.size(0))
-
-            # dists[lbl] += torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl])
-            dists.scatter_add_(0, lbl,
-                               torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
-
-        if loss_type == "triplet":
-            cur_loss = loss(img_out[0], img_out[1], img_out[2])
-        elif loss_type == "contrastive":
-            cur_loss = loss(img_out[0], img_out[1], (lbl_out[0] == lbl_out[1]).long())
-        elif loss_type == "metric":
-            cur_loss = loss(img_out[0], img_out[1], img_out[2],
-                            ideals[lbl_out[0]], ideals[lbl_out[1]], ideals[lbl_out[2]])
-        elif loss_type == "BCE":
-            cur_loss = loss()
-        else:
-            print('No type!')
-            exit(-1)
-
-        optimizer.zero_grad()
-        cur_loss.backward()
-        optimizer.step()
-
-        train_loss += cur_loss.item()
-
-        # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
-        pbar.set_description("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
-
-    return train_loss
-
-
 def run_training(config, recognizer, optimizer, train_dataset, test_dataset, valid_dataset, save_pt, save_im_pt,
                  start_ep):
     train_loader = DataLoader(dataset=train_dataset,
                               batch_size=config['batch_settings']['train']['elements_per_batch'],
                               shuffle=False,
-                              num_workers=os.cpu_count() - 1)  #os.cpu_count() - 1)
+                              num_workers=os.cpu_count() - 1)
     print(f"Train DataLoader is initialized with {len(train_loader)} batches")
 
     test_loader = None
@@ -362,7 +329,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
     ideals, counter, dists = None, None, None
     if save_ideals:
-        ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
+        ideals = torch.zeros(train_dataset.get_alph_size(), config["image_size"]["output_dim"]).cuda()
         counter = torch.empty(train_dataset.get_alph_size(), dtype=torch.int32).fill_(1e-10).cuda()
         dists = torch.zeros(train_dataset.get_alph_size()).cuda()
 
@@ -376,14 +343,21 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             'acc': []}
 
     for e in range(start_ep, config['epoch_num']):
-        # pbar = tqdm(train_loader)
-        # for idx, mb in enumerate(pbar):
+        stat['epochs'].append(e)
 
         train_loss = 0.0
         start_time = time.time()
 
+        if save_ideals:
+            ideals = (ideals.T * counter).T
+
         train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
                                      save_ideals, ideals, counter, dists, loss_type)
+
+        if save_ideals:
+            ideals = torch.div(ideals.T, counter).T
+
+        stat['train_losses'].append(train_loss / len(train_loader))
 
         print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
                                                                  train_loss / len(train_loader)))
@@ -393,6 +367,8 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
 
             test_loss = go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e, loss_type)
 
+            stat['test_losses'].append(test_loss / len(test_loader))
+
             print('Epoch {} -> Test Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
                                                                  test_loss / len(test_loader)))
 
@@ -400,6 +376,12 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
                 print(
                     f'Test Loss Decreased({min_test_loss:.6f}--->{(test_loss / len(test_loader)):.6f})')
                 min_test_loss = test_loss / len(test_loader)
+
+        if valid_loader:
+            acc = validate_with_descrs(config, recognizer, valid_loader, ideals)
+            # acc = validate_oneshot(config, recognizer, valid_loader)
+
+            stat['acc'].append(acc.item())
 
         ep_save_pt = op.join(save_pt, str(e))
         if not os.path.exists(ep_save_pt):
@@ -420,7 +402,15 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             'loss': 0.0,  # test_loss,
         }, op.join(ep_save_pt, "model.pt"))
 
-        if save_ideals:
+        save_plot(stat, ep_save_pt)
+
+        with open(op.join(ep_save_pt, 'info.txt'), 'w') as info_txt:
+            info_txt.write(config['description'] + '\n')
+            for el in zip(stat['epochs'], stat['test_losses']):
+                info_txt.write(str(el[0]) + ' ' + str(el[1]) + '\n')
+
+        if (save_ideals and config['batch_settings']['train']['negative_mode'] == "auto_clusters" and
+                e % config["batch_settings"]['train']["make_clust_on_ep"] == 0):
             # ideals = torch.div(ideals.T, counter).T
             ideals_dict = {}
             counter_dict = {}
@@ -434,47 +424,7 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             with open(op.join(ep_save_pt, 'counter.json'), 'w') as out:
                 json.dump(counter_dict, out)
 
-        stat['epochs'].append(e)
-        stat['train_losses'].append(train_loss / len(train_loader))
-        stat['test_losses'].append(test_loss / len(test_loader))
-        # stat['valid_losses'].append(test_loss / len(test_loader))
-
-        # to_valid = False
-        # if to_valid:
-        # acc = validate_with_descrs(config, recognizer, valid_loader, ideals)
-        # acc = validate_oneshot(config, recognizer, valid_loader)
-        # stat['acc'].append(acc.item())
-
-        # best_id = stat['acc'].index(max(stat['acc']))
-
-        plt.figure(figsize=(12, 7))
-        plt.xlabel("Epoch", fontsize=18)
-
-        plt.plot(stat['epochs'], stat['train_losses'], 'o-', label='train loss',
-                 ms=4)  # , alpha=0.7, label='0.01', lw=5, mec='b', mew=1, ms=7)
-        plt.plot(stat['epochs'], stat['test_losses'], 'o-.', label='test loss',
-                 ms=4)  # , alpha=0.7, label='0.1', lw=5, mec='b', mew=1, ms=7)
-        # plt.plot(stat['epochs'], stat['acc'], 'o--',
-        #          label='Max accuracy:' + str(stat['acc'][best_id]) + '\nEpoch:' + str(stat['epochs'][best_id]),
-        #          ms=4)  # , alpha=0.7, label='0.3', lw=5, mec='b', mew=1, ms=7)
-
-        plt.legend(fontsize=18,
-                   ncol=2,  # количество столбцов
-                   facecolor='oldlace',  # цвет области
-                   edgecolor='black',  # цвет крайней линии
-                   title='value',  # заголовок
-                   title_fontsize='18'  # размер шрифта заголовка
-                   )
-        plt.grid(True)
-        plt.savefig(op.join(ep_save_pt, 'graph.png'))
-
-        with open(op.join(ep_save_pt, 'info.txt'), 'w') as info_txt:
-            info_txt.write(config['description'] + '\n')
-            for el in zip(stat['epochs'], stat['test_losses']):
-                info_txt.write(str(el[0]) + ' ' + str(el[1]) + '\n')
-
-        if save_ideals and e % config["batch_settings"]["make_clust_on_ep"] == 0:
-            ideals = torch.zeros(train_dataset.get_alph_size(), 25).cuda()
+            ideals = torch.zeros(train_dataset.get_alph_size(), config["image_size"]["output_dim"]).cuda()
             counter = torch.empty(train_dataset.get_alph_size(), dtype=torch.int32).fill_(1e-10).cuda()
             dists = torch.zeros(train_dataset.get_alph_size()).cuda()
 

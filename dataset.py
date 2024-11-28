@@ -50,7 +50,7 @@ def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transfor
             return OmniglotPair(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
     elif cfg[dataset_type]["name"] == "OmniglotOneShot":
         return OmniglotOneShot(dataset_type=dataset_type, cfg=cfg)
-    elif cfg[dataset_type]["name"] == "PHD08ValidDataset":
+    elif cfg[dataset_type]["name"] == "PHD08Valid":
         return PHD08ValidDataset(dataset_type=dataset_type, cfg=cfg)
     elif cfg[dataset_type]["name"] == "MOT":
         if mode == 'triplet':
@@ -144,7 +144,8 @@ class SiameseDataset:
             self.clusters = []
             merge_clusters(norms_res, self.clusters, self.cluster_max_size)
 
-            print('Merge clusters time: {:.2f} sec, Total clusters size: {}'.format(time.time() - merge_time, len(self.clusters)))
+            print('Merge clusters time: {:.2f} sec, Total clusters size: {}'.format(time.time() - merge_time,
+                                                                                    len(self.clusters)))
 
             save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
 
@@ -214,30 +215,32 @@ class TripletDataset(SiameseDataset):
 
         return triplet_ids
 
+    def generateItem(self, idx: int) -> dict:
+        triplet_ids = self.generateTriplets()
 
-class PHD08Dataset(Dataset, SiameseDataset):
-    def __init__(self, dataset_type: str, cfg: dict):
-        super().__init__()
-        self.type = cfg['batch_settings']['type']
-        self.positive_mode = cfg['batch_settings']['positive_mode']
-        self.negative_mode = cfg['batch_settings']['negative_mode']
+        transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Resize((self.image_size['height'],
+                                           self.image_size['width']), antialias=False)
+            # torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
 
-        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
-        self.raw_clusters = cfg['batch_settings']['raw_clusters']
-        self.clusters = []
+        triplet_imgs, triplet_lbls = [], []
+        for triplet_id in triplet_ids:
+            c, i = triplet_id[0], triplet_id[1]
+            file = self.samples_per_class[c][i]
 
-        self.data_dir = cfg[dataset_type]['path']
-        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+            # image = read_image(file, ImageReadMode.GRAY)
+            image = None
+            if self.image_size['channels'] == 1:
+                image = Image.open(file).convert('L')
+            else:
+                image = Image.open(file)
 
-        self.all_files = []
+            triplet_imgs.append(transform(self.transforms(image)))
+            triplet_lbls.append(torch.tensor(c))
 
-        print("======= LOADING DATA(PHD08Dataset) =======")
-        for class_dir in os.listdir(self.data_dir):
-            files = os.listdir(op.join(self.data_dir, class_dir))
-            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
-            self.samples_per_class.append(files)
-            self.all_files.extend(files)
-        print('Valid_dataset_length: ', len(self.samples_per_class), len(self.all_files))
+        return {"image": torch.stack(triplet_imgs), "label": torch.stack(triplet_lbls)}
 
 
 class PHD08ValidDataset(Dataset):
@@ -245,7 +248,11 @@ class PHD08ValidDataset(Dataset):
         self.data_dir = cfg[dataset_type]['path']
         self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
-        png_data_dirs = os.listdir(self.data_dir)
+        self.image_size = cfg['image_size']
+
+        self.type = cfg['loss_settings']['type']
+        self.data_dir = cfg[dataset_type]['path']
+
         self.all_files, self.all_classes = [], []
         self.samples_per_class = []
         self.data = []
@@ -253,49 +260,39 @@ class PHD08ValidDataset(Dataset):
         print("======= LOADING DATA(PHD08ValidDataset) =======")
         start_time = time.time()
 
-        # trans1 = torchvision.transforms.ToTensor()
-        # trans2 = torchvision.transforms.Resize((37, 37), antialias=False)
+        for sub_dir in tqdm(os.listdir(self.data_dir)):
+            for class_dir in os.listdir(op.join(self.data_dir, sub_dir)):
+                files = os.listdir(op.join(self.data_dir, sub_dir, class_dir))
+                files = [op.join(self.data_dir, sub_dir, class_dir, fi) for fi in files]
 
-        for class_dir in tqdm(png_data_dirs):
-            files = os.listdir(op.join(self.data_dir, class_dir))
-            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
+                self.all_classes.extend([float(class_dir) for fi in files])
+                self.all_files.extend(files)
+                self.samples_per_class.append(files)
 
-            # for img_path in files:
-            #     image = Image.open(img_path).convert('L')
-            #
-            #     self.data.append({'img': trans2(trans1(image)),
-            #                       'lbl': torch.tensor(float(class_dir))})
-
-            self.all_classes.extend([float(class_dir) for fi in files])
-            self.all_files.extend(files)
-            self.samples_per_class.append(files)
-
-        print('Valid_dataset_length: ', len(self.all_files),
-              '\nValid_dataset_alph_length: ', len(self.samples_per_class),
+        print('Number of files: ', len(self.all_files),
+              '\nNumber of classes: ', len(self.samples_per_class),
               '\nTime: {:.2f} sec'.format(time.time() - start_time))
 
     def __len__(self) -> int:
         return len(self.all_files)
 
     def __getitem__(self, idx: int) -> dict:
-        # image = Image.open(self.all_files[idx]).convert('L')
-        # trans1 = torchvision.transforms.ToTensor()
-        # transform = torchvision.transforms.Resize((37, 37))
-        #
-        # sample = {
-        #     "image": transform(trans1(image)),
-        #     "label": torch.tensor(self.all_classes[idx])
-        # }
+        image = Image.open(self.all_files[idx]).convert('L')
+        trans1 = torchvision.transforms.ToTensor()
+        transform = torchvision.transforms.Resize((37, 37))
+
+        sample = {
+            "image": transform(trans1(image)),
+            "label": torch.tensor(self.all_classes[idx])
+        }
 
         # sample = {
         #     "image": self.data[idx]['img'],
         #     "label": self.data[idx]['lbl']
         # }
 
-        sample = {
-            "image": torch.load(self.all_files[idx]),
-            "label": torch.tensor(self.all_classes[idx])
-        }
+        # sample = {"image": torch.load(self.all_files[idx]),
+                  # "label": torch.tensor(self.all_classes[idx])}
 
         return sample
 
@@ -326,7 +323,7 @@ class MOT_Triplet(Dataset, TripletDataset):
         self.probs_vec = None
 
         if "positive_mode" in cfg['batch_settings'][dataset_type] and \
-            "negative_mode" in cfg['batch_settings'][dataset_type]:
+                "negative_mode" in cfg['batch_settings'][dataset_type]:
 
             self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
             self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
@@ -354,34 +351,13 @@ class MOT_Triplet(Dataset, TripletDataset):
         # assert len(self.alphabet) == len(self.samples_per_class)
 
     def __getitem__(self, idx: int) -> dict:
-        triplet_ids = self.generateTriplets()
-
-        transform = torchvision.transforms.Compose([
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((self.image_size['height'], self.image_size['width']), antialias=False)
-            # torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-
-        triplet_imgs, triplet_lbls = [], []
-        for triplet_id in triplet_ids:
-            c, i = triplet_id[0], triplet_id[1]
-            file = self.samples_per_class[c][i]
-
-            # image = read_image(file, ImageReadMode.GRAY)
-            image = Image.open(file)
-            # print(image.size)
-            triplet_imgs.append(transform(self.transforms(image)))
-            triplet_lbls.append(torch.tensor(c))
-        # print(idx)
-
-        return {"image": torch.stack(triplet_imgs), "label": torch.stack(triplet_lbls)}
+        return self.generateItem(idx)
 
     def __len__(self) -> int:
-        return self.batch_count * self.elements_per_batch # len(self.all_files)
+        return self.batch_count * self.elements_per_batch  # len(self.all_files)
 
     def get_alph(self) -> list:
         return self.alphabet
-
 
 
 class OmniglotOneShot(Dataset):
@@ -430,7 +406,7 @@ class OmniglotOneShot(Dataset):
               '\nTime: {:.2f} sec'.format(time.time() - start_time))
 
     def __len__(self) -> int:
-        return len(self.all_files_test)
+        return self.batch_count * self.elements_per_batch
 
     def __getitem__(self, idx: int) -> dict:
 
@@ -453,21 +429,30 @@ class OmniglotPair(Dataset, PairDataset):
         super().__init__()
         self.transforms = transforms
 
-        self.type = cfg['batch_settings']['type']
-        self.positive_mode = cfg['batch_settings']['positive_mode']
-        self.negative_mode = cfg['batch_settings']['negative_mode']
-        self.gen_imp_ratio = cfg['batch_settings']['gen_imp_ratio']
+        self.image_size = cfg['image_size']
+
+        self.type = cfg['loss_settings']['type']
+        self.data_dir = cfg[dataset_type]['path']
+        self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
+        self.elements_per_batch = cfg['batch_settings'][dataset_type]['elements_per_batch']
+        self.batch_count = cfg['batch_settings'][dataset_type]['iterations']
 
         self.clusters = []
-        self.probs_vec = []
+        self.probs_vec = None
 
-        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
-        self.raw_clusters = cfg['batch_settings']['raw_clusters']
-        self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
+        if "positive_mode" in cfg['batch_settings'][dataset_type] and \
+                "negative_mode" in cfg['batch_settings'][dataset_type]:
 
-        self.data_dir = cfg[dataset_type]['path']
+            self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
+            self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
 
-        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+            if self.negative_mode == "auto_clusters":
+                self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
+                self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
+                self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
+
+        if "alph_pt" in cfg:
+            self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(OmniglotPair) =======")
@@ -511,11 +496,11 @@ class OmniglotPair(Dataset, PairDataset):
 
         return sample
 
+    def __len__(self) -> int:
+        return self.batch_count * self.elements_per_batch
+
     def get_alph(self) -> list:
         return self.alphabet
-
-    def __len__(self) -> int:
-        return len(self.all_files)
 
 
 class OmniglotTriplet(Dataset, TripletDataset):
@@ -523,21 +508,30 @@ class OmniglotTriplet(Dataset, TripletDataset):
         super().__init__()
         self.transforms = transforms
 
-        self.type = cfg['batch_settings']['type']
-        self.positive_mode = cfg['batch_settings']['positive_mode']
-        self.negative_mode = cfg['batch_settings']['negative_mode']
-        self.gen_imp_ratio = cfg['batch_settings']['gen_imp_ratio']
+        self.image_size = cfg['image_size']
+
+        self.type = cfg['loss_settings']['type']
+        self.data_dir = cfg[dataset_type]['path']
+        self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
+        self.elements_per_batch = cfg['batch_settings'][dataset_type]['elements_per_batch']
+        self.batch_count = cfg['batch_settings'][dataset_type]['iterations']
 
         self.clusters = []
         self.probs_vec = None
 
-        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
-        self.raw_clusters = cfg['batch_settings']['raw_clusters']
-        self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
+        if "positive_mode" in cfg['batch_settings'][dataset_type] and \
+                "negative_mode" in cfg['batch_settings'][dataset_type]:
 
-        self.data_dir = cfg[dataset_type]['path']
+            self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
+            self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
 
-        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+            if self.negative_mode == "auto_clusters":
+                self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
+                self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
+                self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
+
+        if "alph_pt" in cfg:
+            self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(OmniglotTriplet) =======")
@@ -579,11 +573,11 @@ class OmniglotTriplet(Dataset, TripletDataset):
 
         return sample
 
+    def __len__(self) -> int:
+        return self.batch_count * self.elements_per_batch
+
     def get_alph(self) -> list:
         return self.alphabet
-
-    def __len__(self) -> int:
-        return len(self.all_files)
 
 
 class KorSyntheticPair(Dataset, PairDataset):
@@ -591,19 +585,30 @@ class KorSyntheticPair(Dataset, PairDataset):
         super().__init__()
         self.transforms = transforms
 
-        self.type = cfg['batch_settings']['type']
-        self.positive_mode = cfg['batch_settings']['positive_mode']
-        self.negative_mode = cfg['batch_settings']['negative_mode']
-        self.gen_imp_ratio = cfg['batch_settings']['gen_imp_ratio']
-        self.clusters = []
+        self.image_size = cfg['image_size']
 
-        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
-        self.raw_clusters = cfg['batch_settings']['raw_clusters']
-        self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
-
+        self.type = cfg['loss_settings']['type']
         self.data_dir = cfg[dataset_type]['path']
+        self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
+        self.elements_per_batch = cfg['batch_settings'][dataset_type]['elements_per_batch']
+        self.batch_count = cfg['batch_settings'][dataset_type]['iterations']
 
-        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+        self.clusters = []
+        self.probs_vec = None
+
+        if "positive_mode" in cfg['batch_settings'][dataset_type] and \
+                "negative_mode" in cfg['batch_settings'][dataset_type]:
+
+            self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
+            self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
+
+            if self.negative_mode == "auto_clusters":
+                self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
+                self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
+                self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
+
+        if "alph_pt" in cfg:
+            self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(KorSyntheticPair) =======")
@@ -616,7 +621,7 @@ class KorSyntheticPair(Dataset, PairDataset):
         assert len(self.alphabet) == len(self.samples_per_class)
 
     def __len__(self) -> int:
-        return len(self.all_files)
+        return self.batch_count * self.elements_per_batch
 
     def __getitem__(self, idx: int) -> dict:
         pair_ids = self.generatePairs()
@@ -644,12 +649,8 @@ class KorSyntheticPair(Dataset, PairDataset):
             pair_imgs.append(image)
             pair_lbls.append(lbl)
 
-        sample = {
-            "image": pair_imgs,
-            "label": pair_lbls
-        }
-
-        return sample
+        return {"image": torch.stack(pair_imgs),
+                "label": torch.stack(pair_lbls)}
 
     def get_alph(self) -> list:
         return self.alphabet
@@ -660,18 +661,30 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
         super().__init__()
         self.transforms = transforms
 
-        self.type = cfg['batch_settings']['type']
-        self.positive_mode = cfg['batch_settings']['positive_mode']
-        self.negative_mode = cfg['batch_settings']['negative_mode']
+        self.image_size = cfg['image_size']
+
+        self.type = cfg['loss_settings']['type']
+        self.data_dir = cfg[dataset_type]['path']
+        self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
+        self.elements_per_batch = cfg['batch_settings'][dataset_type]['elements_per_batch']
+        self.batch_count = cfg['batch_settings'][dataset_type]['iterations']
+
         self.clusters = []
+        self.probs_vec = None
 
-        self.inner_imp_prob = cfg['batch_settings']['inner_imp_prob']
-        self.raw_clusters = cfg['batch_settings']['raw_clusters']
-        self.cluster_max_size = cfg['batch_settings']['cluster_max_size']
+        if "positive_mode" in cfg['batch_settings'][dataset_type] and \
+                "negative_mode" in cfg['batch_settings'][dataset_type]:
 
-        self.data_dir = cfg[dataset_type]["path"]
+            self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
+            self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
 
-        self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+            if self.negative_mode == "auto_clusters":
+                self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
+                self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
+                self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
+
+        if "alph_pt" in cfg:
+            self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
 
         self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(KorSyntheticTriplet) =======")
@@ -680,14 +693,14 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
             files = [op.join(self.data_dir, class_dir, fi) for fi in files]
             self.samples_per_class.append(files)
             self.all_files.extend(files)
-        print('Train_dataset_length: ', len(self.samples_per_class), len(self.all_files))
-        assert len(self.alphabet) == len(self.samples_per_class)
 
-    def __len__(self) -> int:
-        return len(self.all_files)
+        print('Train_dataset_length: ', len(self.samples_per_class), len(self.all_files))
+        # assert len(self.alphabet) == len(self.samples_per_class)
+
+        self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
 
     def __getitem__(self, idx: int) -> dict:
-
+        # print(idx)
         triplet_ids = self.generateTriplets()
 
         triplet_imgs, triplet_lbls = [], []
@@ -713,12 +726,11 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
             triplet_imgs.append(image)
             triplet_lbls.append(lbl)
 
-        sample = {
-            "image": triplet_imgs,
-            "label": triplet_lbls
-        }
+        return {"image": torch.stack(triplet_imgs),
+                "label": torch.stack(triplet_lbls)}
 
-        return sample
+    def __len__(self) -> int:
+        return self.batch_count * self.elements_per_batch
 
     def get_alph(self) -> list:
         return self.alphabet
