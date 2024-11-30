@@ -11,8 +11,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config_path = args.c
 
-    # config_path = "train_config_0.json"
-
     with open(config_path, "r", encoding='utf8') as cfg_file:
         cfg = json.load(cfg_file)
 
