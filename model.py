@@ -9,6 +9,7 @@ import torchreid
 from torchvision import models
 from torch.hub import load_state_dict_from_url
 
+
 def print_model_info(model, image_size, minibatch_size):
     input_tensor = torch.randn(minibatch_size, image_size['channels'], image_size['height'], image_size['width']).cuda()
     total_ops = 0
@@ -129,24 +130,26 @@ def prepare_augmentation():
 
     return T.Compose([
         # Геометрические трансформации
-        T.RandomHorizontalFlip(p=0.5)  # Горизонтальное отражение
-        # T.RandomAffine(
-        #     degrees=10,  # Поворот в диапазоне ±10°
-        #     translate=(0.1, 0.1),  # Сдвиг до 10% от размеров изображения
-        #     scale=(0.9, 1.1),  # Изменение масштаба на ±10%
-        #     shear=5,  # Сдвиг угла на ±5°
-        #     interpolation=InterpolationMode.BILINEAR,  # Интерполяция
-        #     fill=0  # Заполнение черным
-        # ),
+        T.RandomApply([T.RandomResizedCrop(100)], p=0.3),
+        T.RandomHorizontalFlip(p=0.4),  # Горизонтальное отражение
+        T.RandomApply([T.RandomAffine(
+            degrees=10,  # Поворот в диапазоне ±10°
+            translate=(0.1, 0.1),  # Сдвиг до 10% от размеров изображения
+            scale=(0.9, 1.1),  # Изменение масштаба на ±10%
+            shear=5,  # Сдвиг угла на ±5°
+            interpolation=InterpolationMode.BILINEAR,  # Интерполяция
+            fill=0)],  # Заполнение черным
+            p=0.1
+        ),
         # Цветовые трансформации
-        # T.ColorJitter(
-        #     brightness=0.2,  # Изменение яркости на ±20%
-        #     contrast=0.2,  # Изменение контраста на ±20%
-        #     saturation=0.2,  # Изменение насыщенности на ±20%
-        #     hue=0.05  # Изменение оттенка на ±5%
-        # )
+        T.RandomApply([T.ColorJitter(
+            brightness=0.2,  # Изменение яркости на ±20%
+            contrast=0.2,  # Изменение контраста на ±20%
+            saturation=0.2,  # Изменение насыщенности на ±20%
+            hue=0.05  # Изменение оттенка на ±5%
+        )], p=0.3),
         # Симуляция размытия
-        # T.RandomApply([T.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], p=0.2)
+        T.RandomApply([T.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], p=0.2)
         # Преобразование в тензор
         # T.ToTensor()
         # Нормализация
@@ -359,6 +362,7 @@ class LightweightEmbeddingNet2(nn.Module):
         # x = F.normalize(self.fc2(x), p=2, dim=1)
         return x
 
+
 class ResNet50(nn.Module):
     def __init__(self, image_size, pretrained=True):
         super(ResNet50, self).__init__()
@@ -381,6 +385,7 @@ class ResNet50(nn.Module):
         x = self.fc(x)
         x = self.normalize(x, p=2, dim=1)
         return x
+
 
 class MobileNetV2(nn.Module):
     def __init__(self, image_size, pretrained=True):
@@ -429,6 +434,7 @@ Kaiyang Zhou, Yongxin Yang, Andrea Cavallaro, Tao Xiang
 
 Author: Connor Anderson
 '''
+
 
 # __all__ = ['OSNet']
 
@@ -576,8 +582,10 @@ class OSNet(torch.nn.Module):
         x = self.conv5(x)
         x = self.pool(x)
         x = x.flatten(1)
+        # print(x.shape)
         x = self.fc(x)
         return x
+
 
 def ChooseModel(model_name: str, image_size: dict):
     if model_name == "KorNet":

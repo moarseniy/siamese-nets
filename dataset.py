@@ -221,8 +221,8 @@ class TripletDataset(SiameseDataset):
         transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(),
             torchvision.transforms.Resize((self.image_size['height'],
-                                           self.image_size['width']), antialias=False)
-            # torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                                           self.image_size['width']), antialias=False),
+            torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
         triplet_imgs, triplet_lbls = [], []
@@ -237,7 +237,9 @@ class TripletDataset(SiameseDataset):
             else:
                 image = Image.open(file)
 
-            triplet_imgs.append(transform(self.transforms(image)))
+            if self.dataset_type == "train":
+                image = self.transforms(image)
+            triplet_imgs.append(transform(image))
             triplet_lbls.append(torch.tensor(c))
 
         return {"image": torch.stack(triplet_imgs), "label": torch.stack(triplet_lbls)}
@@ -310,7 +312,7 @@ class MOT_Triplet(Dataset, TripletDataset):
     def __init__(self, dataset_type: str, cfg: dict, transforms):
         super().__init__()
         self.transforms = transforms
-
+        self.dataset_type = dataset_type
         self.image_size = cfg['image_size']
 
         self.type = cfg['loss_settings']['type']
