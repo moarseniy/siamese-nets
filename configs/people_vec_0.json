@@ -1,28 +1,29 @@
 {
   "common": {
     "epoch_num": 10000,
-    "model_name": "Light2",
+    "model_name1": "OSNet",
+    "model_path": "/home/arseniy/dev/siamese-nets/zoo/KorNet.json",
     "train": {
       "name": "MOT",
-      "path": "/home/arseniy/hackathon/datasets/retrieve/train/"
+      "path": "/home/arseniy/data/tracking/retrieve/MOT20/train/"
     },
     "test": {
       "name": "MOT",
-      "path": "/home/arseniy/hackathon/datasets/retrieve/test/"
+      "path": "/home/arseniy/data/tracking/retrieve/MOT17Det/train/"
     },
-    "image_size": {"width": 64, "height": 128, "channels": 3, "output_dim": 25},
-    "checkpoint_pt": "/home/arseniy/siamese_out/cc",
-    "images_pt": "/home/arseniy/siamese_out/im",
+    "image_size": {"width": 64, "height": 128, "channels": 3, "output_dim": 64},
+    "checkpoint_pt": "/home/arseniy/data/out/siamese_out/cc",
+    "images_pt": "/home/arseniy/data/out/siamese_out/im",
     "alph_pt": "",
     "device": 0,
     "file_to_start": "",
     "save_images": true,
     "save_ideals": false,
-    "minibatch_size": 256,
+    "minibatch_size": 16,
     "description": "type=triplet, alpha_margin=12, pm=rand, nm=rand",
     "batch_settings": {
       "train": {
-        "elements_per_batch": 10240,
+        "elements_per_batch": 128,
         "iterations": 10,
         "gen_imp_ratio": 0.3,
         "positive_mode": "random",
@@ -39,7 +40,7 @@
         }
       },
       "test": {
-        "elements_per_batch": 10240,
+        "elements_per_batch": 128,
         "iterations": 10,
         "gen_imp_ratio": 0.3,
         "positive_mode": "random",

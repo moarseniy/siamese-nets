@@ -5,83 +5,97 @@ import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
 import torch.nn.functional as F
 
+import json
 import torchreid
 from torchvision import models
 from torch.hub import load_state_dict_from_url
 
+class ConfigurableNN(nn.Module):
+    def __init__(self, config, input_size):
+        super(ConfigurableNN, self).__init__()
+        self.layers = nn.ModuleDict()
+        self.connections = config.get('connections', {})
+        print(f"Initial input size: {input_size}")
 
-def print_model_info(model, image_size, minibatch_size):
-    input_tensor = torch.randn(minibatch_size, image_size['channels'], image_size['height'], image_size['width']).cuda()
-    total_ops = 0
-    total_params = 0
-    layer_info = []
-    print(f"Input shape: {input_tensor.shape}")
+        for layer_name in self.connections.keys():
+            layer_config = config['layers'].get(layer_name, None)
+            layer_type = layer_config['type']
 
-    for name, layer in model.named_children():
-        x = input_tensor
+            prev_input_size = input_size
 
-        if isinstance(layer, nn.Linear):
-            x = x.view(x.size(0), -1)  # Flatten
-            # print(f"  Shape after flattening: {x.shape}")
+            if layer_type == 'Linear':
+                if len(input_size) > 1:  # Flatten spatial dimensions if needed
+                    c, h, w = input_size[0], input_size[1], input_size[2]
+                    in_features = c * h * w
+                    layer = nn.Sequential(nn.Flatten(), nn.Linear(in_features, layer_config['out']))
+                else:
+                    in_features = input_size[0]
+                    layer = nn.Linear(in_features, layer_config['out'])
+                input_size = layer_config['out']
 
-        x = layer(x)
+            elif layer_type == 'Conv2d':
+                c, h, w = input_size[0], input_size[1], input_size[2]
+                layer_params = layer_config["params"]
+                out = layer_params['out']
+                kernel_size = layer_params['f']
+                stride = layer_params['s']
+                padding = layer_params['p']
+                layer = nn.Conv2d(
+                    in_channels=c,
+                    out_channels=out,
+                    kernel_size=kernel_size,
+                    stride=stride,
+                    padding=padding
+                )
 
-        output_shape = x.shape
-        print(f"\nLayer: {name}")
-        print(f"  Output shape: {output_shape}")
+                h = (h + 2 * padding[0] - kernel_size[0]) // stride[0] + 1
+                w = (w + 2 * padding[1] - kernel_size[1]) // stride[1] + 1
+                input_size = [out, h, w]
 
-        ops, params, weights = count_layer_ops_and_params(layer, x.shape)
-        total_ops += ops
-        total_params += params
+            elif layer_type == 'BatchNorm1d':
+                layer = nn.BatchNorm1d(input_size)
+            elif layer_type == 'BatchNorm2d':
+                layer = nn.BatchNorm2d(layer_config['num_features'])
+            elif layer_type == 'Dropout':
+                layer = nn.Dropout(p=layer_config['p'])
+            else:
+                raise ValueError(f"Unknown layer type: {layer_type}")
 
-        layer_info.append((name, ops, params, output_shape))
+            # Add activation and other options inside the same layer
+            activation = layer_config.get('activation')
+            if activation:
+                if activation == 'ReLU':
+                    layer = nn.Sequential(layer, nn.ReLU())
+                elif activation == 'Sigmoid':
+                    layer = nn.Sequential(layer, nn.Sigmoid())
+                elif activation == 'Tanh':
+                    layer = nn.Sequential(layer, nn.Tanh())
+                else:
+                    raise ValueError(f"Unknown activation: {activation}")
 
-        # print(f"Operations: {ops:,} | Weights: {weights:,} | Total params: {params:,}")
+            # Store the layer
+            self.layers[layer_name] = layer
+            print(f"After layer {layer_name} ({layer_type}): {prev_input_size} -> {input_size}")
 
-        input_tensor = x
+    def forward(self, x):
+        layer_outputs = {}
+        for layer_name, layer in self.layers.items():
+            inputs = self.connections[layer_name]
+            if isinstance(inputs, list):
+                input_tensors = [layer_outputs[input_name] for input_name in inputs]
+                layer_input = torch.cat(input_tensors, dim=1)
+            else:
+                layer_input = layer_outputs[inputs] if inputs in layer_outputs else x
+            layer_outputs[layer_name] = layer(layer_input)
 
-    for name, ops, params, output_shape in layer_info:
-        print(f"Layer: {name}")
-        print(f"  Output shape: {output_shape}")
-        print(f"  Operations: {ops:,} ({ops / total_ops * 100:.2f}%)")
-        print(f"  Parameters: {params:,} ({params / total_params * 100:.2f}%)")
-        print()
-
-    print("Summary:")
-    print(f"  Total operations: {total_ops:,}")
-    print(f"  Total parameters: {total_params:,}")
+        return layer_outputs[next(iter(self.layers.keys()))]
 
 
-def count_layer_ops_and_params(layer, output_shape):
-    ops = 0
-    params = 0
-    weights = 0
-
-    if isinstance(layer, nn.Conv2d):
-        out_channels, in_channels, kernel_height, kernel_width = layer.weight.shape
-        output_height, output_width = output_shape[2], output_shape[3]
-        ops = output_height * output_width * kernel_height * kernel_width * in_channels * out_channels
-        params = out_channels * (in_channels * kernel_height * kernel_width) + out_channels
-        weights = out_channels * (in_channels * kernel_height * kernel_width)
-
-    elif isinstance(layer, nn.Linear):
-        in_features, out_features = layer.weight.shape
-        ops = in_features * out_features
-        params = in_features * out_features + out_features
-        weights = in_features * out_features
-
-    elif isinstance(layer, nn.BatchNorm2d):
-        out_channels = layer.weight.shape[0]
-        ops = 2 * out_channels
-        params = 2 * out_channels
-        weights = 2 * out_channels
-
-    elif isinstance(layer, nn.MaxPool2d):
-        ops = 0
-        params = 0
-        weights = 0
-
-    return ops, params, weights
+def load_model_from_config(config_path, input_size):
+    c, h, w = input_size['channels'], input_size['height'], input_size['width']
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    return ConfigurableNN(config, [c, h, w])
 
 
 class SymReLU(torch.nn.Module):

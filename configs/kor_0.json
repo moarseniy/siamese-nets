@@ -1,7 +1,8 @@
 {
   "common": {
     "epoch_num": 10000,
-    "model_name": "KorNet",
+    "model_name1": "KorNet",
+    "model_path": "/home/arseniy/dev/siamese-nets/zoo/KorNet.json",
     "train": {
       "name": "KorSynthetic",
       "path": "/home/arseniy/ocr_data/retrieve_mtr_per_class/"
@@ -15,8 +16,8 @@
       "path": "/home/arseniy/ocr_data/PHD08/"
     },
     "image_size": {"width": 37, "height": 37, "channels": 1, "output_dim": 25},
-    "checkpoint_pt": "/home/arseniy/siamese_out/kor/cc",
-    "images_pt": "/home/arseniy/siamese_out/kor/im",
+    "checkpoint_pt": "/home/arseniy/data/out/siamese_out/kor/cc",
+    "images_pt": "/home/arseniy/data/out/siamese_out/kor/im",
     "alph_pt": "/home/arseniy/ocr_data/kor_101_mfcr.json",
     "device": 0,
     "file_to_start": "",
