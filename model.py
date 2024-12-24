@@ -80,13 +80,16 @@ class ConfigurableNN(nn.Module):
     def forward(self, x):
         layer_outputs = {}
         for layer_name, layer in self.layers.items():
-            inputs = self.connections[layer_name]
-            if isinstance(inputs, list):
-                input_tensors = [layer_outputs[input_name] for input_name in inputs]
-                layer_input = torch.cat(input_tensors, dim=1)
-            else:
-                layer_input = layer_outputs[inputs] if inputs in layer_outputs else x
-            layer_outputs[layer_name] = layer(layer_input)
+            try:
+                inputs = self.connections[layer_name]
+                if isinstance(inputs, list):
+                    input_tensors = [layer_outputs[input_name] for input_name in inputs]
+                    layer_input = torch.cat(input_tensors, dim=1)
+                else:
+                    layer_input = layer_outputs[inputs] if inputs in layer_outputs else x
+                layer_outputs[layer_name] = layer(layer_input)
+            except Exception as e:
+                print(layer_name, e)
 
         return layer_outputs[next(iter(self.layers.keys()))]
 
@@ -95,7 +98,7 @@ def load_model_from_config(config_path, input_size):
     c, h, w = input_size['channels'], input_size['height'], input_size['width']
     with open(config_path, 'r') as f:
         config = json.load(f)
-    return ConfigurableNN(config, [c, h, w])
+    return ConfigurableNN(config, [c, h, w]).cuda()
 
 
 class SymReLU(torch.nn.Module):

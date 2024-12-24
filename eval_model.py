@@ -1,13 +1,11 @@
-import os, time
+import time
 import os.path as op
 
-import torch, json
-from torchvision.utils import save_image
 from model import *
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from dataset import ChooseDataset
-
+from oneshot import *
 
 def validate_with_descrs(config, recognizer, valid_loader, descrs):
     start_time = time.time()
@@ -48,45 +46,26 @@ def validate_with_descrs(config, recognizer, valid_loader, descrs):
 
     return 100 * count / len(valid_loader.dataset)
 
+def validate_oneshot(config, recognizer):
+    transform = transforms.Compose([
+        transforms.Resize(config["image_size"]["height"], config["image_size"]["height"]),
+        transforms.ToTensor()
+    ])
 
-def validate_oneshot(config, recognizer, valid_loader):
-    start_time = time.time()
-    pbar = tqdm(valid_loader)
+    all_runs_path = config["oneshot"]["path"]
+    accuracies = []
+    print("Oneshot validation:")
+    for run_folder in sorted(os.listdir(all_runs_path)):
+        run_path = os.path.join(all_runs_path, run_folder)
+        if os.path.isdir(run_path):
+            accuracy = run_oneshot(recognizer, run_path, transform)
+            print(f"Accuracy for {run_folder}: {accuracy:.2%}")
+            accuracies.append(accuracy)
 
-    count = 0  # torch.zeros(valid_dataset.get_alph_size()).cuda()
-    for idx, mb in enumerate(pbar):
+    acc = sum(accuracies) / len(accuracies)
+    print(f"Overall Accuracy: {acc:.2%}")
 
-        train_img = mb['train'][0].cuda()
-        test_img = mb['test'][0].cuda()
-        lbl = mb['lbl'].cuda()
-
-        if idx < 10 and config['save_images']:
-            save_image(train_img[0], os.path.join('/home/arseniy/results/out/torch_out', 'out_valid_' + str(idx) + '.png'))
-
-        train_data_out = recognizer(train_img)
-        test_data_out = recognizer(test_img)
-
-        # print(train_data_out.shape, test_data_out.shape)
-
-        distances = torch.cdist(test_data_out.unsqueeze(1), train_data_out.unsqueeze(0))
-
-        ids = torch.argmin(distances.squeeze(1), dim=1)
-
-        # Optionally, you can also compute the minimum distances
-        # min_distances = torch.min(distances, dim=1).values
-
-        count += torch.sum((lbl == ids).clone().detach())
-
-        pbar.set_description("Valid [count %d]" % count)
-
-    accuracy = 100 * count / (20 * 20)
-    print('\nCount: ', count,
-          '\nLength: ', 20 * 20,
-          '\nAccuracy: ', accuracy,
-          '\nTime: {:.2f} sec'.format(time.time() - start_time))
-
-    return accuracy
-
+    return acc
 
 if __name__ == "__main__":
 

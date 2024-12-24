@@ -195,6 +195,7 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
             pos_img = mb_img[:, 1]
             neg_img = mb_img[:, 2]
 
+
             anc_lbl = mb_lbl[:, 0]
             pos_lbl = mb_lbl[:, 1]
             neg_lbl = mb_lbl[:, 2]
@@ -207,7 +208,7 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
 
             if save_ideals:
                 for out, lbl in ((anc_out, anc_lbl), (pos_out, pos_lbl), (neg_out, neg_lbl)):
-
+                    print(ideals.size(), lbl.size(), out.size())
                     ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
 
                     counter += torch.bincount(lbl, minlength=ideals.size(0))
@@ -378,9 +379,10 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
                 min_test_loss = test_loss / len(test_loader)
 
         if valid_loader:
-            acc = validate_with_descrs(config, recognizer, valid_loader, ideals)
-            # acc = validate_oneshot(config, recognizer, valid_loader)
-
+            if "oneshot" in config:
+                acc = validate_oneshot(config, recognizer)
+            elif save_ideals:
+                acc = validate_with_descrs(config, recognizer, valid_loader, ideals)
             stat['acc'].append(acc.item())
 
         ep_save_pt = op.join(save_pt, str(e))
@@ -435,9 +437,6 @@ def prepare_dirs(config, device_num):
     from_file = False
     start_ep = 0
     checkpoint_pt = config["checkpoint_pt"]
-    images_pt = config["images_pt"]
-    if not op.exists(checkpoint_pt):
-        os.mkdir(checkpoint_pt)
 
     now = datetime.now()
     dt_string = str(device_num) + '_' + now.strftime("%d-%m-%Y-%H-%M")
@@ -452,9 +451,7 @@ def prepare_dirs(config, device_num):
     # else:
     save_pt = op.join(checkpoint_pt, dt_string)
     print('Checkpoint path:', save_pt)
-    save_im_pt = op.join(images_pt, dt_string)
-    if not op.exists(save_pt):
-        os.makedirs(save_pt)
+    save_im_pt = op.join(save_pt, "out_images")
     if not op.exists(save_im_pt):
         os.makedirs(save_im_pt)
 

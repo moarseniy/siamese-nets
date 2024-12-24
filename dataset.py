@@ -722,8 +722,8 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
             image = bgr * mask
             lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
 
-            if random.uniform(0, 1) < 0.7:
-                image = self.transforms(image)
+            # if random.uniform(0, 1) < 0.7:
+            #     image = self.transforms(image)
 
             triplet_imgs.append(image)
             triplet_lbls.append(lbl)
