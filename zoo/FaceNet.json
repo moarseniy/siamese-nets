@@ -1,8 +1,5 @@
 {
   "layers": {
-    "input": {
-      "type": "data"
-    },
     "conv0": {
       "type": "Conv2d",
       "params": {"in": 1, "out": 16, "f": [3, 3], "s": [1, 1], "p": [0, 0]},
@@ -35,7 +32,7 @@
     },
     "output": {
       "type": "Linear",
-      "params": {"out": 25},
+      "out": 25,
       "activation": "Sigmoid"
     }
   },

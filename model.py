@@ -5,10 +5,142 @@ import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
 import torch.nn.functional as F
 
-import json
+import json, math
+from functools import reduce
+from operator import mul
 import torchreid
 from torchvision import models
 from torch.hub import load_state_dict_from_url
+from configuration import configure_model
+
+def conv2d_handler(input_shape, params):
+    """
+    Вычисляет выходной размер для слоя Conv2d.
+    Предполагается, что input_shape имеет вид (channels, height, width).
+    Параметры params должны содержать:
+      - f: [kernel_height, kernel_width]
+      - s: [stride_height, stride_width]
+      - p: [pad_height, pad_width]
+      - out: количество выходных каналов
+    """
+    in_channels, in_h, in_w = input_shape
+    f_h, f_w = params['f']
+    s_h, s_w = params['s']
+    p_h, p_w = params['p']
+    out_channels = params['out']
+
+    out_h = math.floor((in_h + 2 * p_h - f_h) / s_h) + 1
+    out_w = math.floor((in_w + 2 * p_w - f_w) / s_w) + 1
+    return (out_channels, out_h, out_w)
+
+def linear_handler(input_shape, params):
+    """
+    Вычисляет выходной размер для линейного слоя.
+    Если входная форма имеет размерность >1 (например, из свёрточных слоёв),
+    выполняется операция flatten. Параметры params должны содержать 'out' – размер выхода.
+    """
+    if isinstance(input_shape, tuple) and len(input_shape) > 1:
+        flat_dim = reduce(mul, input_shape)
+    else:
+        flat_dim = input_shape
+    return (params['out'],)
+
+def identity_handler(input_shape, params=None):
+    """
+    Для слоёв, не изменяющих размер (например, функции активации),
+    возвращаем входную форму без изменений.
+    """
+    return input_shape
+
+def maxpool2d_handler(input_shape, params):
+    """
+    Вычисляет выходной размер для слоя MaxPool2d.
+    Параметры params должны содержать:
+      - f: [kernel_height, kernel_width]
+      - s: [stride_height, stride_width] (если не указан, по умолчанию равен kernel_size)
+      - p: [pad_height, pad_width] (по умолчанию 0)
+    """
+    in_channels, in_h, in_w = input_shape
+    kernel_size = params.get('f', params.get('kernel_size'))
+    stride = params.get('s', params.get('stride', kernel_size))
+    padding = params.get('p', params.get('padding', [0, 0]))
+
+    k_h, k_w = kernel_size
+    s_h, s_w = stride
+    p_h, p_w = padding
+
+    out_h = (in_h + 2 * p_h - k_h) // s_h + 1
+    out_w = (in_w + 2 * p_w - k_w) // s_w + 1
+    return (in_channels, out_h, out_w)
+
+# Словарь обработчиков для разных типов слоёв.
+handlers = {
+    'Conv2d': conv2d_handler,
+    'Linear': linear_handler,
+    'MaxPool2d': maxpool2d_handler,
+    'AvgPool2d': maxpool2d_handler,  # Можно использовать тот же обработчик для AvgPool2d
+    'ReLU': identity_handler,
+    'Sigmoid': identity_handler,
+}
+
+def compute_network_shapes(arch, input_shape):
+    """
+    Принимает архитектуру (словарь с ключами 'layers' и 'connections')
+    и входную форму (например, (channels, height, width)).
+    Возвращает словарь, где каждому слою сопоставлена вычисленная выходная форма.
+
+    Структура connections предполагает, что для каждого слоя указан его прямой предок.
+    Ключ "input" используется для входных данных.
+    """
+    layers = arch.get('layers', {})
+    connections = arch.get('connections', {})
+
+    shapes = {"input": input_shape}
+
+    # Для простоты предполагаем, что архитектура последовательная.
+    # Находим последовательность слоёв, начиная от "input".
+    current = "input"
+    while True:
+        next_layer = None
+        for layer_name, prev in connections.items():
+            if prev == current:
+                next_layer = layer_name
+                break
+        if next_layer is None:
+            break  # дальнейшие слои не найдены
+
+        # Берём описание слоя
+        layer_spec = layers.get(next_layer, {})
+        layer_type = layer_spec.get('type')
+        params = layer_spec.get('params', {})
+
+        # Если в описании указан activation, можно его проигнорировать, так как он не меняет форму.
+        # Вычисляем выходную форму для слоя с использованием соответствующего обработчика.
+        if layer_type in handlers:
+            input_for_layer = shapes[current]
+            new_shape = handlers[layer_type](input_for_layer, params)
+            shapes[next_layer] = new_shape
+        else:
+            # Если тип слоя не распознан, можно либо выбросить исключение,
+            # либо просто передать форму без изменений.
+            shapes[next_layer] = shapes[current]
+            print(f"Предупреждение: нет обработчика для слоя типа {layer_type}. Форма не изменена.")
+
+        current = next_layer
+
+    return shapes
+
+
+def print_network_shapes(shapes):
+    """
+    Форматированный вывод для посчитанных размеров слоёв нейросети.
+    """
+    print("\nРазмеры слоёв нейросети:")
+    for layer, shape in shapes.items():
+        if isinstance(shape, tuple) and len(shape) == 3:
+            print(f"{layer}: {shape[0]} каналов, высота {shape[1]}, ширина {shape[2]}")
+        else:
+            print(f"{layer}: {shape[0]} выходных нейронов")
 
 class ConfigurableNN(nn.Module):
     def __init__(self, config, input_size):
@@ -98,8 +230,7 @@ def load_model_from_config(config_path, input_size):
     c, h, w = input_size['channels'], input_size['height'], input_size['width']
     with open(config_path, 'r') as f:
         config = json.load(f)
-    return ConfigurableNN(config, [c, h, w]).cuda()
-
+    return configure_model(config, [c, h, w]).cuda()
 
 class SymReLU(torch.nn.Module):
     def __init__(self):
