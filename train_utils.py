@@ -69,13 +69,21 @@ def Dataloader_by_Index(data_loader, target=0):
 
 def ChooseOptimizer(cfg, model):
     if cfg["type"] == "Adam":
-        return torch.optim.Adam(model.parameters(), lr=cfg["lr"])
+        return torch.optim.Adam(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
+    elif cfg["type"] == "AdamW":
+        return torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     elif cfg["type"] == "SGD":
-        return None
+        return torch.optim.SGD(model.parameters(), lr=cfg["lr"], momentum=cfg["momentum"])
     else:
         print("Unknown optimizer type!")
         return None
 
+def ChooseScheduler(cfg, optimizer):
+    if cfg["type"] == "Cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg["T_max"])
+    else:
+        print("Unknown scheduler type!")
+        return None
 
 def ChooseLoss(cfg):
     loss_type = cfg["type"]
