@@ -2,37 +2,49 @@
   "layers": {
     "conv0": {
       "type": "Conv2d",
-      "params": {"in": 1, "out": 16, "f": [3, 3], "s": [1, 1], "p": [0, 0]},
+      "params": {"in": 1, "f": [3, 3], "s": [1, 1], "p": [0, 0], "out": 16},
+      "batch_norm": true,
+      "dropout": 0.3,
       "activation": "ReLU"
     },
     "conv1": {
       "type": "Conv2d",
-      "params": {"in": 16, "out": 16, "f": [5, 5], "s": [2, 2], "p": [2, 2]},
+      "params": {"in": 16, "f": [5, 5], "s": [2, 2], "p": [2, 2], "out": 16},
+      "batch_norm": true,
+      "dropout": 0.3,
       "activation": "ReLU"
     },
     "conv2": {
       "type": "Conv2d",
-      "params": {"in": 16, "out": 16, "f": [3, 3], "s": [1, 1], "p": [1, 1]},
+      "params": {"in": 16, "f": [3, 3], "s": [1, 1], "p": [1, 1], "out": 16},
+      "batch_norm": true,
+      "dropout": 0.3,
       "activation": "ReLU"
     },
     "conv3": {
       "type": "Conv2d",
-      "params": {"in": 16, "out": 24, "f": [5, 5], "s": [2, 2], "p": [2, 2]},
+      "params": {"in": 16, "f": [5, 5], "s": [2, 2], "p": [2, 2], "out": 24},
+      "batch_norm": true,
+      "dropout": 0.3,
       "activation": "ReLU"
     },
     "conv4": {
       "type": "Conv2d",
-      "params": {"in": 24, "out": 24, "f": [3, 3], "s": [1, 1], "p": [1, 1]},
+      "params": {"in": 24, "f": [3, 3], "s": [1, 1], "p": [1, 1], "out": 24},
+      "batch_norm": true,
+      "dropout": 0.3,
       "activation": "ReLU"
     },
     "conv5": {
       "type": "Conv2d",
-      "params": {"in": 24, "out": 24, "f": [3, 3], "s": [1, 1], "p": [1, 1]},
+      "params": {"in": 24, "f": [3, 3], "s": [1, 1], "p": [1, 1], "out": 24},
+      "batch_norm": true,
+      "dropout": 0.3,
       "activation": "ReLU"
     },
     "output": {
       "type": "Linear",
-      "out": 25,
+      "params": {"out": 25},
       "activation": "Sigmoid"
     }
   },

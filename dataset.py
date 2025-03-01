@@ -220,9 +220,10 @@ class TripletDataset(SiameseDataset):
 
         transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((self.image_size['height'],
-                                           self.image_size['width']), antialias=False),
-            torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            torchvision.transforms.Resize(size=(self.image_size['height'],
+                                                self.image_size['width']),
+                                          antialias=False),
+            # torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
         triplet_imgs, triplet_lbls = [], []

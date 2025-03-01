@@ -276,28 +276,28 @@ def prepare_augmentation():
         ]
     )
 
-    return T.Compose([
+    transforms = T.Compose([
         # Геометрические трансформации
-        T.RandomApply([T.RandomResizedCrop(100)], p=0.3),
-        T.RandomHorizontalFlip(p=0.4),  # Горизонтальное отражение
-        T.RandomApply([T.RandomAffine(
-            degrees=10,  # Поворот в диапазоне ±10°
-            translate=(0.1, 0.1),  # Сдвиг до 10% от размеров изображения
-            scale=(0.9, 1.1),  # Изменение масштаба на ±10%
-            shear=5,  # Сдвиг угла на ±5°
-            interpolation=InterpolationMode.BILINEAR,  # Интерполяция
-            fill=0)],  # Заполнение черным
-            p=0.1
-        ),
+        # T.RandomApply([T.RandomResizedCrop(100)], p=0.3),
+        # T.RandomHorizontalFlip(p=0.4),  # Горизонтальное отражение
+        # T.RandomApply([T.RandomAffine(
+        #     degrees=10,  # Поворот в диапазоне ±10°
+        #     translate=(0.1, 0.1),  # Сдвиг до 10% от размеров изображения
+        #     scale=(0.9, 1.1),  # Изменение масштаба на ±10%
+        #     shear=5,  # Сдвиг угла на ±5°
+        #     interpolation=InterpolationMode.BILINEAR,  # Интерполяция
+        #     fill=0)],  # Заполнение черным
+        #     p=0.1
+        # ),
         # Цветовые трансформации
-        T.RandomApply([T.ColorJitter(
-            brightness=0.2,  # Изменение яркости на ±20%
-            contrast=0.2,  # Изменение контраста на ±20%
-            saturation=0.2,  # Изменение насыщенности на ±20%
-            hue=0.05  # Изменение оттенка на ±5%
-        )], p=0.3),
+        # T.RandomApply([T.ColorJitter(
+        #     brightness=0.2,  # Изменение яркости на ±20%
+        #     contrast=0.2,  # Изменение контраста на ±20%
+        #     saturation=0.2,  # Изменение насыщенности на ±20%
+        #     hue=0.05  # Изменение оттенка на ±5%
+        # )], p=0.3),
         # Симуляция размытия
-        T.RandomApply([T.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], p=0.2)
+        # T.RandomApply([T.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], p=0.2)
         # Преобразование в тензор
         # T.ToTensor()
         # Нормализация

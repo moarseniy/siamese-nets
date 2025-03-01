@@ -208,7 +208,7 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
 
             if save_ideals:
                 for out, lbl in ((anc_out, anc_lbl), (pos_out, pos_lbl), (neg_out, neg_lbl)):
-                    print(ideals.size(), lbl.size(), out.size())
+                    # print(ideals.size(), lbl.size(), out.size())
                     ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
 
                     counter += torch.bincount(lbl, minlength=ideals.size(0))
@@ -431,12 +431,12 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             dists = torch.zeros(train_dataset.get_alph_size()).cuda()
 
 
-def prepare_dirs(config, device_num):
+def prepare_dirs(repo_dir, config, device_num):
     save_paths = {}
     files_to_start = {}
     from_file = False
     start_ep = 0
-    checkpoint_pt = config["checkpoint_pt"]
+    checkpoint_pt = op.join(repo_dir, config["checkpoint_pt"])
 
     now = datetime.now()
     dt_string = str(device_num) + '_' + now.strftime("%d-%m-%Y-%H-%M")

@@ -14,7 +14,8 @@ if __name__ == "__main__":
     with open(config_path, "r", encoding='utf8') as cfg_file:
         cfg = json.load(cfg_file)
 
-    save_pt, save_im_pt = prepare_dirs(cfg['common'], cfg['common']['device'])
+    repo_dir = os.path.dirname(os.path.dirname(config_path))
+    save_pt, save_im_pt = prepare_dirs(repo_dir, cfg['common'], cfg['common']['device'])
 
     transforms = prepare_augmentation()
 
@@ -31,9 +32,14 @@ if __name__ == "__main__":
 
     model = None
     if "model_name" in cfg["common"]:
-        model = ChooseModel(cfg['common']["model_name"], cfg['common']['image_size'])
+        model = ChooseModel(cfg['common']["model_name"],
+                            cfg['common']['image_size'])
+    elif "model_path" in cfg["common"]:
+        model = load_model_from_config(os.path.join(repo_dir, cfg['common']["model_path"]),
+                                       cfg['common']['image_size'])
     else:
-        model = load_model_from_config(cfg['common']["model_path"], cfg['common']['image_size'])
+        print("No model!")
+        exit(-1)
 
     start_ep = 0
     if cfg['common']['file_to_start']:
