@@ -404,11 +404,11 @@ def run_training(config, recognizer, optimizer, train_dataset, test_dataset, val
             'loss': 0.0,  # test_loss,
         }, op.join(ep_save_pt, "model.pt"))
 
-        save_plot(stat, ep_save_pt)
+        save_plot(stat, save_pt)
 
-        with open(op.join(ep_save_pt, 'info.txt'), 'w') as info_txt:
+        with open(op.join(save_pt, 'info.txt'), 'a') as info_txt:
             info_txt.write(config['description'] + '\n')
-            for el in zip(stat['epochs'], stat['test_losses']):
+            for el in zip(stat['epochs'], stat['train_losses']):
                 info_txt.write(str(el[0]) + ' ' + str(el[1]) + '\n')
 
         if (save_ideals and config['batch_settings']['train']['negative_mode'] == "auto_clusters" and

@@ -10,7 +10,7 @@
       "name": "MOT",
       "path": "/home/arseniy/data/vgg2_small/val"
     },
-    "image_size": {"width": 37, "height": 37, "channels": 1, "output_dim": 25},
+    "image_size": {"width": 64, "height": 64, "channels": 1, "output_dim": 25},
     "checkpoint_pt": "cc/face/",
     "device": 0,
     "file_to_start": "",
