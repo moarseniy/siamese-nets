@@ -55,3 +55,4 @@ def save_plot(stat, ep_save_pt):
                )
     plt.grid(True)
     plt.savefig(op.join(ep_save_pt, 'graph.png'))
+    plt.close()

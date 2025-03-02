@@ -8,6 +8,7 @@ import torch
 
 from jinja2.optimizer import optimize
 from torch.utils.data import DataLoader
+import onnx
 
 import numpy as np
 from torch import nn
@@ -63,7 +64,6 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
             anc_img = mb_img[:, 0]
             pos_img = mb_img[:, 1]
             neg_img = mb_img[:, 2]
-
 
             anc_lbl = mb_lbl[:, 0]
             pos_lbl = mb_lbl[:, 1]
@@ -168,10 +168,17 @@ def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt,
 def run_training(config, recognizer, optimizer, scheduler,
                  train_dataset, test_dataset, valid_dataset,
                  save_pt, save_im_pt, start_ep):
+    num_workers = config.get('num_workers', os.cpu_count() - 1)
+    if num_workers == -1:
+        num_workers = os.cpu_count() - 1
+
+    with open(op.join(save_pt, 'info.txt'), 'a') as info_txt:
+        info_txt.write(config['description'] + '\n')
+
     train_loader = DataLoader(dataset=train_dataset,
                               batch_size=config['batch_settings']['train']['elements_per_batch'],
                               shuffle=False,
-                              num_workers=1)#os.cpu_count() - 1)
+                              num_workers=num_workers)
     print(f"Train DataLoader is initialized with {len(train_loader)} batches")
 
     test_loader = None
@@ -179,7 +186,7 @@ def run_training(config, recognizer, optimizer, scheduler,
         test_loader = DataLoader(dataset=test_dataset,
                                  batch_size=config['batch_settings']['test']['elements_per_batch'],
                                  shuffle=False,
-                                 num_workers=os.cpu_count() - 1)
+                                 num_workers=num_workers)
         print(f"Test DataLoader is initialized with {len(test_loader)} batches")
 
     valid_loader = None
@@ -187,7 +194,7 @@ def run_training(config, recognizer, optimizer, scheduler,
         valid_loader = DataLoader(dataset=valid_dataset,
                                   batch_size=config['batch_settings']['valid']['elements_per_batch'],
                                   shuffle=False,
-                                  num_workers=os.cpu_count() - 1)
+                                  num_workers=num_workers)
         print(f"Valid DataLoader is initialized with {len(valid_loader)} batches")
 
     # if config['validate_settings']['validate'] and config['file_to_start']:
@@ -274,12 +281,26 @@ def run_training(config, recognizer, optimizer, scheduler,
             'loss': 0.0,  # test_loss,
         }, op.join(ep_save_pt, "model.pt"))
 
+        dummy_input = torch.randn(1, config["image_size"]["channels"],
+                                     config["image_size"]["height"],
+                                     config["image_size"]["width"]).to(next(recognizer.parameters()).device)
+
+        torch.onnx.export(
+            recognizer,
+            dummy_input,
+            op.join(ep_save_pt, "model.onnx"),
+            export_params=True,
+            # opset_version=11,
+            do_constant_folding=True,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}}
+        )
+
         save_plot(stat, save_pt)
 
         with open(op.join(save_pt, 'info.txt'), 'a') as info_txt:
-            info_txt.write(config['description'] + '\n')
-            for el in zip(stat['epochs'], stat['train_losses']):
-                info_txt.write(str(el[0]) + ' ' + str(el[1]) + '\n')
+           info_txt.write(str(stat['epochs'][-1]) + ' ' + str(stat['train_losses']) + '\n')
 
         if (save_ideals and config['batch_settings']['train']['negative_mode'] == "auto_clusters" and
                 e % config["batch_settings"]['train']["make_clust_on_ep"] == 0):

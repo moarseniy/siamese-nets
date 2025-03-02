@@ -4,6 +4,7 @@ from os.path import join
 from os import listdir as ls
 
 import time
+
 import torch
 
 from multiprocessing import Pool, cpu_count
@@ -28,6 +29,8 @@ from mining_methods import save_clusters
 from mining_methods import generate_sym_probs
 from mining_methods import save_sym_probs
 
+# np.random.seed(42) TODO: make it possible to set rand!
+
 def ChooseDataset(dataset_type: str, cfg: dict, augmentation: dict) -> Dataset:
     if not dataset_type in cfg:
         print("No " + dataset_type + " in config!")
@@ -50,11 +53,10 @@ def ChooseDataset(dataset_type: str, cfg: dict, augmentation: dict) -> Dataset:
         return PHD08ValidDataset(dataset_type=dataset_type, cfg=cfg)
     elif cfg[dataset_type]["name"] == "Common":
         if mode == 'triplet':
-            return Common_Triplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
+            return CommonTriplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
     elif cfg[dataset_type]["name"] == "Meta":
         if mode == 'triplet':
-            return Meta_Triplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
-
+            return MetaTriplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
     else:
         print("Dataset name is not defined!!!")
         exit(-1)
@@ -79,10 +81,22 @@ def prepare_alph(alph_pt: str) -> (list, dict):
 class SiameseDataset:
     def __init__(self):
         self.samples_per_class = []
+        self.meta_data = {}
 
     def choose_positive_random(self):
         pos_c = np.random.randint(len(self.samples_per_class))
+
+        if self.meta_data:
+            while list(self.meta_data[str(pos_c)].values()).count(0) == 1: # dirty hack! TODO: fix it!
+                pos_c = np.random.randint(len(self.samples_per_class))
+
         pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
+
+        if self.meta_data:
+            while self.meta_data[str(pos_c)][str(pos_id)] != 0:
+                pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
+
+            # print(pos_c, pos_id, self.meta_data[str(pos_c)][str(pos_id)], self.meta_data[str(pos_c)])
         return pos_c, pos_id
 
     def choose_positive_symprobs(self):
@@ -98,6 +112,11 @@ class SiameseDataset:
         anc_id = np.random.randint(num_samples)
         while anc_id == pos_id:
             anc_id = np.random.randint(num_samples)
+
+        if self.meta_data:
+            while anc_id == pos_id or self.meta_data[str(pos_c)][str(anc_id)] != 0:
+                anc_id = np.random.randint(num_samples)
+            # print(pos_c, pos_id, anc_id, self.meta_data[str(pos_c)][str(anc_id)])
         return anc_id
 
     def create_negative_random(self, pos_c):
@@ -105,101 +124,19 @@ class SiameseDataset:
         while pos_c == neg_c:
             neg_c = np.random.randint(len(self.samples_per_class))
         neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
-        return neg_c, neg_id
 
-    def create_negative_clusters(self, pos_c):
-        neg_c, neg_id = None, None
-        if len(self.clusters) > 0:
-            for cluster in self.clusters:
-                if pos_c in cluster and random.random() < self.inner_imp_prob:
-                    neg_c = cluster[np.random.randint(len(cluster))]
-
-                    while pos_c == neg_c:
-                        neg_c = cluster[np.random.randint(len(cluster))]
-                    neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
-
-                    break
-
-            if neg_c is None and neg_id is None:
-                neg_c, neg_id = self.create_negative_random(pos_c)
-        else:
-            neg_c, neg_id = self.create_negative_random(pos_c)
-        return neg_c, neg_id
-
-    def get_alph_size(self) -> int:
-        return len(self.samples_per_class)
-
-    def update_rules(self, dataset_type, save_ideals, ideals, counter, dists, ep_save_pt, config, e):
-
-        if save_ideals and config['batch_settings'][dataset_type]['negative_mode'] == 'auto_clusters' and \
-                e % config["batch_settings"][dataset_type]["make_clust_on_ep"] == 0:
-            generation_time = time.time()
-
-            norms_res = generate_clusters(ideals, self.raw_clusters, len(self.alphabet))
-
-            print('Generation clusters time: {:.2f} sec'.format(time.time() - generation_time))
-
-            merge_time = time.time()
-
-            self.clusters = []
-            merge_clusters(norms_res, self.clusters, self.cluster_max_size)
-
-            print('Merge clusters time: {:.2f} sec, Total clusters size: {}'.format(time.time() - merge_time,
-                                                                                    len(self.clusters)))
-
-            save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
-
-        if config['batch_settings'][dataset_type]['positive_mode'] == 'auto_sym_probs':
-            sym_probs_time = time.time()
-
-            sym_probs_gamma = config['batch_settings'][dataset_type]['sym_probs_gamma']
-            merge_w = config['batch_settings'][dataset_type]['merge_w']
-
-            generate_sym_probs(dists, ideals, counter, self.probs_vec, merge_w, sym_probs_gamma)
-
-            print('Generation sym_probs time: {:.2f} sec'.format(time.time() - sym_probs_time))
-
-            save_sym_probs(os.path.join(ep_save_pt, 'sym_probs.json'), self.probs_vec, self.alphabet)
-
-
-class SiameseDatasetMeta:
-    def __init__(self):
-        self.samples_per_class = []
-        self.meta_data = {}
-
-    def choose_positive_random(self):
-        pos_c = np.random.randint(len(self.samples_per_class))
-        pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
-        while self.meta_data[str(pos_c)][str(pos_id)]:
-            pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
-        return pos_c, pos_id
-
-    def choose_positive_symprobs(self):
-        pos_c = np.random.choice(len(self.samples_per_class), 1, p=self.probs_vec)
-        pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
-        return pos_c, pos_id
-
-    def create_positive(self, pos_c, pos_id):
-        num_samples = len(self.samples_per_class[pos_c])
-        if num_samples == 1:
-            return pos_id
-
-        anc_id = np.random.randint(num_samples)
-        while anc_id == pos_id and self.meta_data[str(pos_c)][str(anc_id)]:
-            anc_id = np.random.randint(num_samples)
-        return anc_id
-
-    def create_negative_random(self, pos_c):
-        if random.uniform(0, 1) < 0.5:
-            neg_c = np.random.randint(len(self.samples_per_class))
-            while pos_c == neg_c:
+        if self.meta_data:
+            if random.uniform(0, 1) < 0.5:
                 neg_c = np.random.randint(len(self.samples_per_class))
-            neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
-        else:
-            neg_c = pos_c
-            neg_id = np.random.randint(len(self.samples_per_class[pos_c]))
-            while not self.meta_data[str(pos_c)][str(neg_id)]:
+                while pos_c == neg_c:
+                    neg_c = np.random.randint(len(self.samples_per_class))
+                neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
+            else:
+                neg_c = pos_c # dirty hack! TODO: Fix it!
                 neg_id = np.random.randint(len(self.samples_per_class[pos_c]))
+                while self.meta_data[str(pos_c)][str(neg_id)] == 0:
+                    neg_id = np.random.randint(len(self.samples_per_class[pos_c]))
+
         return neg_c, neg_id
 
     def create_negative_clusters(self, pos_c):
@@ -287,7 +224,7 @@ class PairDataset(SiameseDataset):
         return pair_ids
 
 
-class TripletDataset(SiameseDatasetMeta):
+class TripletDataset(SiameseDataset):
     def __init__(self, *args):
         super().__init__(*args)
 
@@ -405,7 +342,7 @@ class PHD08ValidDataset(Dataset):
         return self.alph_dict
 
 
-class Common_Triplet(Dataset, TripletDataset):
+class CommonTriplet(Dataset, TripletDataset):
     def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
         super().__init__()
         self.augmentation = augmentation
@@ -459,7 +396,7 @@ class Common_Triplet(Dataset, TripletDataset):
         return self.alphabet
 
 
-class Meta_Triplet(Dataset, TripletDataset):
+class MetaTriplet(Dataset, TripletDataset):
     def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
         super().__init__()
         self.augmentation = augmentation
@@ -475,16 +412,19 @@ class Meta_Triplet(Dataset, TripletDataset):
         self.clusters = []
         self.probs_vec = None
 
-        with open(op.join('/home/arseniy/data/kryptonite/train/meta.json'), 'r') as meta:
-            meta = json.load(meta)
+        meta_path = op.join(self.data_dir, 'meta.json')
+        if op.exists(meta_path):
+            with open(meta_path, 'r') as meta:
+                meta = json.load(meta)
 
-        for key, value in meta.items():
-            folder, index = key.split("/")
-            if folder not in self.meta_data:
-                self.meta_data[folder] = {}
-            self.meta_data[folder][index] = value
-        # print(self.meta_data['8740'])
-        # exit(-1)
+            print(f'Meta file: {meta_path} loaded!')
+
+            for key, value in meta.items():
+                folder, index = key.split("/")
+                if folder not in self.meta_data:
+                    self.meta_data[folder] = {}
+                self.meta_data[folder][index] = value
+
         if "positive_mode" in cfg['batch_settings'][dataset_type] and \
                 "negative_mode" in cfg['batch_settings'][dataset_type]:
 
@@ -503,12 +443,18 @@ class Meta_Triplet(Dataset, TripletDataset):
         self.all_files, self.samples_per_class = [], []
         print("======= LOADING DATA(Hack_Triplet) =======")
 
-        for class_dir in sorted(os.listdir(self.data_dir)):
-            files = os.listdir(op.join(self.data_dir, class_dir))
-            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
+        for sub_dir in sorted(os.listdir(self.data_dir)):
+            sub_dir_path = op.join(self.data_dir, sub_dir)
+            if not op.isdir(sub_dir_path):
+                continue
 
-            self.samples_per_class.append(files)
-            self.all_files.extend(files)
+            for class_dir in sorted(os.listdir(sub_dir_path)):
+                files = sorted(os.listdir(op.join(self.data_dir, sub_dir, class_dir)))
+                files = [op.join(self.data_dir, sub_dir, class_dir, fi) for fi in files]
+
+                self.samples_per_class.append(files)
+                self.all_files.extend(files)
+
         print(f'Hack_Triplet classes:{len(self.samples_per_class)}, files:{len(self.all_files)}')
         # assert len(self.alphabet) == len(self.samples_per_class)
 
