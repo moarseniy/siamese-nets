@@ -3,14 +3,14 @@
     "epoch_num": 10000,
     "model_path": "zoo/FaceNet.json",
     "train": {
-      "name": "MOT",
-      "path": "/home/arseniy/data/vgg2_small/data/train"
+      "name": "Meta",
+      "path": "/home/arseniy/data/kryptonite/train/images/"
     },
-    "test": {
-      "name": "MOT",
+    "test1": {
+      "name": "Common",
       "path": "/home/arseniy/data/vgg2_small/data/val"
     },
-    "image_size": {"width": 128, "height": 128, "channels": 1, "output_dim": 32},
+    "image_size": {"width": 224, "height": 224, "channels": 1, "output_dim": 32},
     "checkpoint_pt": "cc/face/",
     "device": 0,
     "file_to_start": "",
@@ -20,7 +20,7 @@
     "description": "type=triplet, alpha_margin=4, pm=rand, nm=clust, in_p=0.2, raw_clust=30000, make_clust_on_ep=5",
     "batch_settings": {
       "train": {
-        "elements_per_batch": 256,
+        "elements_per_batch": 64,
         "iterations": 10,
         "gen_imp_ratio": 0.3,
         "positive_mode": "random",
@@ -68,17 +68,17 @@
       "momentum": 0.9
     },
     "scheduler_settings": {
-
+      "type": "Cosine",
+      "T_max": 50
     }
   },
   "augmentation": {
-    "to_use": true,
-    "prob": 0.8,
+    "to_use": false,
+    "aug_prob": 0.8,
     "to_use_funcs": {
-      "RandomRotation": 0.5,
-      "RandomHorizontalFlip": 0.5,
-      "ColorJitter": 0.1,
-      "Normalize": 0.1
+      "RandomRotation": 0.3,
+      "RandomHorizontalFlip": 0.2,
+      "ColorJitter": 0.1
     },
     "transforms": {
       "RandomRotation": {"params": {"degrees": 10}},

@@ -1,5 +1,4 @@
 import os
-
 import os.path as op
 from os.path import join
 from os import listdir as ls
@@ -8,13 +7,11 @@ import time
 import torch
 
 from multiprocessing import Pool, cpu_count
-
 import matplotlib.pyplot as plt
 import numpy as np
 import ujson as json
 
 from tqdm import tqdm
-
 from torch.utils.data import Dataset
 from torchvision.utils import save_image
 from torchvision.io import read_image
@@ -31,8 +28,7 @@ from mining_methods import save_clusters
 from mining_methods import generate_sym_probs
 from mining_methods import save_sym_probs
 
-
-def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transforms) -> Dataset:
+def ChooseDataset(dataset_type: str, cfg: dict, augmentation: dict) -> Dataset:
     if not dataset_type in cfg:
         print("No " + dataset_type + " in config!")
         return None
@@ -40,21 +36,25 @@ def ChooseDataset(dataset_type: str, cfg: dict, transforms: torchvision.transfor
     mode = cfg['loss_settings']['type']
     if cfg[dataset_type]["name"] == "KorSynthetic":
         if mode == 'triplet':
-            return KorSyntheticTriplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
+            return KorSyntheticTriplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
         elif mode == 'pair':
-            return KorSyntheticPair(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
+            return KorSyntheticPair(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
     elif cfg[dataset_type]["name"] == "Omniglot":
         if mode == 'triplet':
-            return OmniglotTriplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
+            return OmniglotTriplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
         elif mode == 'pair':
-            return OmniglotPair(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
+            return OmniglotPair(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
     elif cfg[dataset_type]["name"] == "OmniglotOneShot":
         return OmniglotOneShot(dataset_type=dataset_type, cfg=cfg)
     elif cfg[dataset_type]["name"] == "PHD08Valid":
         return PHD08ValidDataset(dataset_type=dataset_type, cfg=cfg)
-    elif cfg[dataset_type]["name"] == "MOT":
+    elif cfg[dataset_type]["name"] == "Common":
         if mode == 'triplet':
-            return MOT_Triplet(dataset_type=dataset_type, cfg=cfg, transforms=transforms)
+            return Common_Triplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
+    elif cfg[dataset_type]["name"] == "Meta":
+        if mode == 'triplet':
+            return Meta_Triplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
+
     else:
         print("Dataset name is not defined!!!")
         exit(-1)
@@ -162,6 +162,101 @@ class SiameseDataset:
             save_sym_probs(os.path.join(ep_save_pt, 'sym_probs.json'), self.probs_vec, self.alphabet)
 
 
+class SiameseDatasetMeta:
+    def __init__(self):
+        self.samples_per_class = []
+        self.meta_data = {}
+
+    def choose_positive_random(self):
+        pos_c = np.random.randint(len(self.samples_per_class))
+        pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
+        while self.meta_data[str(pos_c)][str(pos_id)]:
+            pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
+        return pos_c, pos_id
+
+    def choose_positive_symprobs(self):
+        pos_c = np.random.choice(len(self.samples_per_class), 1, p=self.probs_vec)
+        pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
+        return pos_c, pos_id
+
+    def create_positive(self, pos_c, pos_id):
+        num_samples = len(self.samples_per_class[pos_c])
+        if num_samples == 1:
+            return pos_id
+
+        anc_id = np.random.randint(num_samples)
+        while anc_id == pos_id and self.meta_data[str(pos_c)][str(anc_id)]:
+            anc_id = np.random.randint(num_samples)
+        return anc_id
+
+    def create_negative_random(self, pos_c):
+        if random.uniform(0, 1) < 0.5:
+            neg_c = np.random.randint(len(self.samples_per_class))
+            while pos_c == neg_c:
+                neg_c = np.random.randint(len(self.samples_per_class))
+            neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
+        else:
+            neg_c = pos_c
+            neg_id = np.random.randint(len(self.samples_per_class[pos_c]))
+            while not self.meta_data[str(pos_c)][str(neg_id)]:
+                neg_id = np.random.randint(len(self.samples_per_class[pos_c]))
+        return neg_c, neg_id
+
+    def create_negative_clusters(self, pos_c):
+        neg_c, neg_id = None, None
+        if len(self.clusters) > 0:
+            for cluster in self.clusters:
+                if pos_c in cluster and random.random() < self.inner_imp_prob:
+                    neg_c = cluster[np.random.randint(len(cluster))]
+
+                    while pos_c == neg_c:
+                        neg_c = cluster[np.random.randint(len(cluster))]
+                    neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
+
+                    break
+
+            if neg_c is None and neg_id is None:
+                neg_c, neg_id = self.create_negative_random(pos_c)
+        else:
+            neg_c, neg_id = self.create_negative_random(pos_c)
+        return neg_c, neg_id
+
+    def get_alph_size(self) -> int:
+        return len(self.samples_per_class)
+
+    def update_rules(self, dataset_type, save_ideals, ideals, counter, dists, ep_save_pt, config, e):
+
+        if save_ideals and config['batch_settings'][dataset_type]['negative_mode'] == 'auto_clusters' and \
+                e % config["batch_settings"][dataset_type]["make_clust_on_ep"] == 0:
+            generation_time = time.time()
+
+            norms_res = generate_clusters(ideals, self.raw_clusters, len(self.alphabet))
+
+            print('Generation clusters time: {:.2f} sec'.format(time.time() - generation_time))
+
+            merge_time = time.time()
+
+            self.clusters = []
+            merge_clusters(norms_res, self.clusters, self.cluster_max_size)
+
+            print('Merge clusters time: {:.2f} sec, Total clusters size: {}'.format(time.time() - merge_time,
+                                                                                    len(self.clusters)))
+
+            save_clusters(os.path.join(ep_save_pt, 'clusters.json'), self.clusters, self.alphabet)
+
+        if config['batch_settings'][dataset_type]['positive_mode'] == 'auto_sym_probs':
+            sym_probs_time = time.time()
+
+            sym_probs_gamma = config['batch_settings'][dataset_type]['sym_probs_gamma']
+            merge_w = config['batch_settings'][dataset_type]['merge_w']
+
+            generate_sym_probs(dists, ideals, counter, self.probs_vec, merge_w, sym_probs_gamma)
+
+            print('Generation sym_probs time: {:.2f} sec'.format(time.time() - sym_probs_time))
+
+            save_sym_probs(os.path.join(ep_save_pt, 'sym_probs.json'), self.probs_vec, self.alphabet)
+
+
 class PairDataset(SiameseDataset):
     def __init__(self, *args):
         super().__init__(*args)
@@ -192,7 +287,7 @@ class PairDataset(SiameseDataset):
         return pair_ids
 
 
-class TripletDataset(SiameseDataset):
+class TripletDataset(SiameseDatasetMeta):
     def __init__(self, *args):
         super().__init__(*args)
 
@@ -238,8 +333,9 @@ class TripletDataset(SiameseDataset):
             else:
                 image = Image.open(file)
 
-            if self.dataset_type == "train":
-                image = self.transforms(image)
+            # if self.dataset_type == "train":
+            #     image = self.transforms(image)
+
             triplet_imgs.append(transform(image))
             triplet_lbls.append(torch.tensor(c))
 
@@ -309,10 +405,10 @@ class PHD08ValidDataset(Dataset):
         return self.alph_dict
 
 
-class MOT_Triplet(Dataset, TripletDataset):
-    def __init__(self, dataset_type: str, cfg: dict, transforms):
+class Common_Triplet(Dataset, TripletDataset):
+    def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
         super().__init__()
-        self.transforms = transforms
+        self.augmentation = augmentation
         self.dataset_type = dataset_type
         self.image_size = cfg['image_size']
 
@@ -341,7 +437,7 @@ class MOT_Triplet(Dataset, TripletDataset):
             self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
 
         self.all_files, self.samples_per_class = [], []
-        print("======= LOADING DATA(MOT_Triplet) =======")
+        print("======= LOADING DATA(Common_Triplet) =======")
 
         for sub_dir in os.listdir(self.data_dir):
             for class_dir in os.listdir(op.join(self.data_dir, sub_dir)):
@@ -350,7 +446,70 @@ class MOT_Triplet(Dataset, TripletDataset):
 
                 self.samples_per_class.append(files)
                 self.all_files.extend(files)
-        print('MOT_Triplet_dataset_length: ', len(self.samples_per_class), len(self.all_files))
+        print(f'Common_Triplet classes:{len(self.samples_per_class)}, files:{len(self.all_files)}')
+        # assert len(self.alphabet) == len(self.samples_per_class)
+
+    def __getitem__(self, idx: int) -> dict:
+        return self.generateItem(idx)
+
+    def __len__(self) -> int:
+        return self.batch_count * self.elements_per_batch  # len(self.all_files)
+
+    def get_alph(self) -> list:
+        return self.alphabet
+
+
+class Meta_Triplet(Dataset, TripletDataset):
+    def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
+        super().__init__()
+        self.augmentation = augmentation
+        self.dataset_type = dataset_type
+        self.image_size = cfg['image_size']
+
+        self.type = cfg['loss_settings']['type']
+        self.data_dir = cfg[dataset_type]['path']
+        self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
+        self.elements_per_batch = cfg['batch_settings'][dataset_type]['elements_per_batch']
+        self.batch_count = cfg['batch_settings'][dataset_type]['iterations']
+
+        self.clusters = []
+        self.probs_vec = None
+
+        with open(op.join('/home/arseniy/data/kryptonite/train/meta.json'), 'r') as meta:
+            meta = json.load(meta)
+
+        for key, value in meta.items():
+            folder, index = key.split("/")
+            if folder not in self.meta_data:
+                self.meta_data[folder] = {}
+            self.meta_data[folder][index] = value
+        # print(self.meta_data['8740'])
+        # exit(-1)
+        if "positive_mode" in cfg['batch_settings'][dataset_type] and \
+                "negative_mode" in cfg['batch_settings'][dataset_type]:
+
+            self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
+            self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
+
+            if self.negative_mode == "auto_clusters":
+                self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
+                self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
+                self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
+
+        if "alphabet" in cfg:
+            self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
+            self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
+
+        self.all_files, self.samples_per_class = [], []
+        print("======= LOADING DATA(Hack_Triplet) =======")
+
+        for class_dir in sorted(os.listdir(self.data_dir)):
+            files = os.listdir(op.join(self.data_dir, class_dir))
+            files = [op.join(self.data_dir, class_dir, fi) for fi in files]
+
+            self.samples_per_class.append(files)
+            self.all_files.extend(files)
+        print(f'Hack_Triplet classes:{len(self.samples_per_class)}, files:{len(self.all_files)}')
         # assert len(self.alphabet) == len(self.samples_per_class)
 
     def __getitem__(self, idx: int) -> dict:
@@ -428,9 +587,9 @@ class OmniglotOneShot(Dataset):
 
 
 class OmniglotPair(Dataset, PairDataset):
-    def __init__(self, dataset_type: str, cfg: dict, transforms):
+    def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
         super().__init__()
-        self.transforms = transforms
+        self.augmentation = augmentation
 
         self.image_size = cfg['image_size']
 
@@ -507,9 +666,9 @@ class OmniglotPair(Dataset, PairDataset):
 
 
 class OmniglotTriplet(Dataset, TripletDataset):
-    def __init__(self, dataset_type: str, cfg: dict, transforms):
+    def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
         super().__init__()
-        self.transforms = transforms
+        self.augmentation = augmentation
 
         self.image_size = cfg['image_size']
 
@@ -584,9 +743,9 @@ class OmniglotTriplet(Dataset, TripletDataset):
 
 
 class KorSyntheticPair(Dataset, PairDataset):
-    def __init__(self, dataset_type: str, cfg: dict, transforms):
+    def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
         super().__init__()
-        self.transforms = transforms
+        self.augmentation = augmentation
 
         self.image_size = cfg['image_size']
 
@@ -646,8 +805,8 @@ class KorSyntheticPair(Dataset, PairDataset):
             image = bgr * mask
             lbl = torch.tensor(int(data[2]["data"][0]))  # .type(torch.LongTensor)
 
-            if random.uniform(0, 1) < 0.7:
-                image = self.transforms(image)
+            if random.uniform(0, 1) < self.augmentation["aug_prob"]:
+                image = self.augmentation["transform_list"](image)
 
             pair_imgs.append(image)
             pair_lbls.append(lbl)
@@ -660,9 +819,9 @@ class KorSyntheticPair(Dataset, PairDataset):
 
 
 class KorSyntheticTriplet(Dataset, TripletDataset):
-    def __init__(self, dataset_type: str, cfg: dict, transforms):
+    def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
         super().__init__()
-        self.transforms = transforms
+        self.augmentation = augmentation
 
         self.image_size = cfg['image_size']
 
