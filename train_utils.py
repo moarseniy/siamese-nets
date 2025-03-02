@@ -123,44 +123,45 @@ def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt,
     elements_per_batch = config["batch_settings"]["train"]["elements_per_batch"]
     minibatch_size = config["minibatch_size"]
 
-    pbar = tqdm(test_loader)
-    for idx, cur_batch in enumerate(pbar):
-        batch_img = cur_batch['image'].to(device='cuda', non_blocking=True)
-        batch_lbl = cur_batch['label'].to(device='cuda', non_blocking=True)
+    with torch.no_grad():
+        pbar = tqdm(test_loader)
+        for idx, cur_batch in enumerate(pbar):
+            batch_img = cur_batch['image'].to(device='cuda', non_blocking=True)
+            batch_lbl = cur_batch['label'].to(device='cuda', non_blocking=True)
 
-        minibatch_imgs = torch.split(batch_img, minibatch_size)
-        minibatch_lbls = torch.split(batch_lbl, minibatch_size)
+            minibatch_imgs = torch.split(batch_img, minibatch_size)
+            minibatch_lbls = torch.split(batch_lbl, minibatch_size)
 
-        for mb_idx, (mb_img, mb_lbl) in enumerate(zip(minibatch_imgs, minibatch_lbls)):
+            for mb_idx, (mb_img, mb_lbl) in enumerate(zip(minibatch_imgs, minibatch_lbls)):
 
-            anc_img = mb_img[:, 0]
-            pos_img = mb_img[:, 1]
-            neg_img = mb_img[:, 2]
+                anc_img = mb_img[:, 0]
+                pos_img = mb_img[:, 1]
+                neg_img = mb_img[:, 2]
 
-            anc_lbl = mb_lbl[:, 0]
-            pos_lbl = mb_lbl[:, 1]
-            neg_lbl = mb_lbl[:, 2]
+                anc_lbl = mb_lbl[:, 0]
+                pos_lbl = mb_lbl[:, 1]
+                neg_lbl = mb_lbl[:, 2]
 
-            assert torch.equal(anc_lbl, pos_lbl)
+                assert torch.equal(anc_lbl, pos_lbl)
 
-            anc_out = recognizer(anc_img)
-            pos_out = recognizer(pos_img)
-            neg_out = recognizer(neg_img)
+                anc_out = recognizer(anc_img)
+                pos_out = recognizer(pos_img)
+                neg_out = recognizer(neg_img)
 
-            if config["save_images"] and idx == 0 and mb_idx == 0:
-                save_image(anc_img[0], os.path.join(save_im_pt, str(e) + '_test_anc_' +
-                                                    str(int(anc_lbl[0])) + '.png'))
-                save_image(pos_img[0], os.path.join(save_im_pt, str(e) + '_test_pos_' +
-                                                    str(int(pos_lbl[0])) + '.png'))
-                save_image(neg_img[0], os.path.join(save_im_pt, str(e) + '_test_neg_' +
-                                                    str(int(neg_lbl[0])) + '.png'))
+                if config["save_images"] and idx == 0 and mb_idx == 0:
+                    save_image(anc_img[0], os.path.join(save_im_pt, str(e) + '_test_anc_' +
+                                                        str(int(anc_lbl[0])) + '.png'))
+                    save_image(pos_img[0], os.path.join(save_im_pt, str(e) + '_test_pos_' +
+                                                        str(int(pos_lbl[0])) + '.png'))
+                    save_image(neg_img[0], os.path.join(save_im_pt, str(e) + '_test_neg_' +
+                                                        str(int(neg_lbl[0])) + '.png'))
 
-            cur_loss = loss(anc_out, pos_out, neg_out)
+                cur_loss = loss(anc_out, pos_out, neg_out)
 
-            test_loss += cur_loss.item()
+                test_loss += cur_loss.item()
 
-            # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
-            pbar.set_description("Epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
+                # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+                pbar.set_description("Epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
 
     return test_loss
 

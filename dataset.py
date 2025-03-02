@@ -87,16 +87,15 @@ class SiameseDataset:
         pos_c = np.random.randint(len(self.samples_per_class))
 
         if self.meta_data:
-            while list(self.meta_data[str(pos_c)].values()).count(0) == 1: # dirty hack! TODO: fix it!
+            while list(self.meta_data[pos_c].values()).count(0) == 1: # dirty hack! TODO: fix it!
                 pos_c = np.random.randint(len(self.samples_per_class))
 
         pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
 
         if self.meta_data:
-            while self.meta_data[str(pos_c)][str(pos_id)] != 0:
+            while self.meta_data[pos_c][str(pos_id)] != 0:
                 pos_id = np.random.randint(len(self.samples_per_class[pos_c]))
 
-            # print(pos_c, pos_id, self.meta_data[str(pos_c)][str(pos_id)], self.meta_data[str(pos_c)])
         return pos_c, pos_id
 
     def choose_positive_symprobs(self):
@@ -114,9 +113,8 @@ class SiameseDataset:
             anc_id = np.random.randint(num_samples)
 
         if self.meta_data:
-            while anc_id == pos_id or self.meta_data[str(pos_c)][str(anc_id)] != 0:
+            while anc_id == pos_id or self.meta_data[pos_c][str(anc_id)] != 0:
                 anc_id = np.random.randint(num_samples)
-            # print(pos_c, pos_id, anc_id, self.meta_data[str(pos_c)][str(anc_id)])
         return anc_id
 
     def create_negative_random(self, pos_c):
@@ -134,7 +132,7 @@ class SiameseDataset:
             else:
                 neg_c = pos_c # dirty hack! TODO: Fix it!
                 neg_id = np.random.randint(len(self.samples_per_class[pos_c]))
-                while self.meta_data[str(pos_c)][str(neg_id)] == 0:
+                while self.meta_data[pos_c][str(neg_id)] == 0:
                     neg_id = np.random.randint(len(self.samples_per_class[pos_c]))
 
         return neg_c, neg_id
@@ -419,11 +417,19 @@ class MetaTriplet(Dataset, TripletDataset):
 
             print(f'Meta file: {meta_path} loaded!')
 
+            index_map = {}
+            index_counter = 0
             for key, value in meta.items():
                 folder, index = key.split("/")
-                if folder not in self.meta_data:
-                    self.meta_data[folder] = {}
-                self.meta_data[folder][index] = value
+                if folder not in index_map:
+                    index_map[folder] = index_counter
+                    index_counter += 1
+
+                mapped_folder = index_map[folder]
+
+                if mapped_folder not in self.meta_data:
+                    self.meta_data[mapped_folder] = {}
+                self.meta_data[mapped_folder][index] = value
 
         if "positive_mode" in cfg['batch_settings'][dataset_type] and \
                 "negative_mode" in cfg['batch_settings'][dataset_type]:

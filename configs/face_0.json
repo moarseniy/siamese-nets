@@ -6,9 +6,9 @@
       "name": "Meta",
       "path": "/home/arseniy/data/kryptonite/train/"
     },
-    "test1": {
-      "name": "Common",
-      "path": "/home/arseniy/data/vgg2_small/data/val"
+    "test": {
+      "name": "Meta",
+      "path": "/home/arseniy/data/kryptonite/val/"
     },
     "image_size": {"width": 224, "height": 224, "channels": 1, "output_dim": 32},
     "checkpoint_pt": "cc/face/",
