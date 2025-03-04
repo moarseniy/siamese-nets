@@ -42,13 +42,15 @@ def ChooseScheduler(cfg, optimizer):
         print("Unknown scheduler type!")
         return None
 
-def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
+def go_metric_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
                     save_ideals, ideals, counter, dists, loss_type):
 
     batch_count = config["batch_settings"]["train"]["iterations"]
     elements_per_batch = config["batch_settings"]["train"]["elements_per_batch"]
     minibatch_size = config["minibatch_size"]
+    train_mb_count = elements_per_batch / minibatch_size
 
+    train_loss = 0.0
     pbar = tqdm(train_loader)
     for idx, cur_batch in enumerate(pbar):
         batch_img = cur_batch['image']  #.to(device='cuda', non_blocking=True)
@@ -57,6 +59,7 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
         minibatch_imgs = torch.split(batch_img, minibatch_size)
         minibatch_lbls = torch.split(batch_lbl, minibatch_size)
 
+        mb_train_loss = 0
         for mb_idx, (mb_img, mb_lbl) in enumerate(zip(minibatch_imgs, minibatch_lbls)):
             mb_img = mb_img.to(device='cuda', non_blocking=True)
             mb_lbl = mb_lbl.to(device='cuda', non_blocking=True)
@@ -110,19 +113,22 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, train_los
             cur_loss.backward()
             optimizer.step()
 
-            train_loss += cur_loss.item()
+            mb_train_loss += cur_loss.item()
 
             # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
             pbar.set_description("Epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+        train_loss += mb_train_loss / train_mb_count
 
-    return train_loss
+    return train_loss / len(train_loader)
 
 
-def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e, loss_type):
-    batch_count = config["batch_settings"]["train"]["iterations"]
-    elements_per_batch = config["batch_settings"]["train"]["elements_per_batch"]
+def go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type):
+    batch_count = config["batch_settings"]["test"]["iterations"]
+    elements_per_batch = config["batch_settings"]["test"]["elements_per_batch"]
     minibatch_size = config["minibatch_size"]
+    test_mb_count = elements_per_batch / minibatch_size
 
+    test_loss = 0.0
     with torch.no_grad():
         pbar = tqdm(test_loader)
         for idx, cur_batch in enumerate(pbar):
@@ -132,6 +138,7 @@ def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt,
             minibatch_imgs = torch.split(batch_img, minibatch_size)
             minibatch_lbls = torch.split(batch_lbl, minibatch_size)
 
+            mb_test_loss = 0
             for mb_idx, (mb_img, mb_lbl) in enumerate(zip(minibatch_imgs, minibatch_lbls)):
 
                 anc_img = mb_img[:, 0]
@@ -158,12 +165,13 @@ def go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt,
 
                 cur_loss = loss(anc_out, pos_out, neg_out)
 
-                test_loss += cur_loss.item()
+                mb_test_loss += cur_loss.item()
 
                 # print("epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
                 pbar.set_description("Epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
+            test_loss += mb_test_loss / test_mb_count
 
-    return test_loss
+    return test_loss / len(test_loader)
 
 
 def run_training(config, recognizer, optimizer, scheduler,
@@ -224,37 +232,33 @@ def run_training(config, recognizer, optimizer, scheduler,
     for e in range(start_ep, config['epoch_num']):
         stat['epochs'].append(e)
 
-        train_loss = 0.0
         start_time = time.time()
 
         if save_ideals:
             ideals = (ideals.T * counter).T
 
-        train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, train_loss, save_im_pt, e,
+        train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
                                      save_ideals, ideals, counter, dists, loss_type)
 
         if save_ideals:
             ideals = torch.div(ideals.T, counter).T
 
-        stat['train_losses'].append(train_loss / len(train_loader))
+        stat['train_losses'].append(train_loss)
 
-        print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
-                                                                 train_loss / len(train_loader)))
+        print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time, train_loss))
         test_loss = 0.0
         if test_loader:
             start_time = time.time()
 
-            test_loss = go_metric_test(test_loader, config, recognizer, loss, test_loss, save_im_pt, e, loss_type)
+            test_loss = go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type)
 
-            stat['test_losses'].append(test_loss / len(test_loader))
+            stat['test_losses'].append(test_loss)
 
-            print('Epoch {} -> Test Loss({:.2f} sec): {}'.format(e, time.time() - start_time,
-                                                                 test_loss / len(test_loader)))
+            print('Epoch {} -> Test Loss({:.2f} sec): {}'.format(e, time.time() - start_time, test_loss))
 
-            if min_test_loss > (test_loss / len(test_loader)):
-                print(
-                    f'Test Loss Decreased({min_test_loss:.6f}--->{(test_loss / len(test_loader)):.6f})')
-                min_test_loss = test_loss / len(test_loader)
+            if min_test_loss > (test_loss):
+                print(f'Test Loss Decreased({min_test_loss:.6f}--->{(test_loss):.6f})')
+                min_test_loss = test_loss
 
         if valid_loader:
             if "oneshot" in config:
@@ -279,7 +283,7 @@ def run_training(config, recognizer, optimizer, scheduler,
             'epoch': e,
             'model_state_dict': recognizer.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'loss': 0.0,  # test_loss,
+            'loss': test_loss,
         }, op.join(ep_save_pt, "model.pt"))
 
         dummy_input = torch.randn(1, config["image_size"]["channels"],
@@ -301,7 +305,10 @@ def run_training(config, recognizer, optimizer, scheduler,
         save_plot(stat, save_pt)
 
         with open(op.join(save_pt, 'info.txt'), 'a') as info_txt:
-           info_txt.write(str(stat['epochs'][-1]) + ' ' + str(stat['train_losses']) + '\n')
+            info_txt.write(str(e) + ' ' + str(train_loss) + ' ')
+            if test_loss:
+                info_txt.write(str(test_loss))
+            info_txt.write('\n')
 
         if (save_ideals and config['batch_settings']['train']['negative_mode'] == "auto_clusters" and
                 e % config["batch_settings"]['train']["make_clust_on_ep"] == 0):

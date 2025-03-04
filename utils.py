@@ -29,7 +29,7 @@ def prepare_dirs(repo_dir, config, device_num):
 
     return save_pt, save_im_pt
 
-def save_plot(stat, ep_save_pt):
+def save_plot(stat, save_pt):
     plt.figure(figsize=(12, 7))
     plt.xlabel("Epoch", fontsize=18)
 
@@ -53,6 +53,7 @@ def save_plot(stat, ep_save_pt):
                title='value',  # заголовок
                title_fontsize='18'  # размер шрифта заголовка
                )
+
     plt.grid(True)
-    plt.savefig(op.join(ep_save_pt, 'graph.png'))
+    plt.savefig(op.join(save_pt, 'graph.png'))
     plt.close()

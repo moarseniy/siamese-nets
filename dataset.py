@@ -447,7 +447,7 @@ class MetaTriplet(Dataset, TripletDataset):
             self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
 
         self.all_files, self.samples_per_class = [], []
-        print("======= LOADING DATA(Hack_Triplet) =======")
+        print(f'======= LOADING DATA(MetaTriplet) =======({self.data_dir}')
 
         for sub_dir in sorted(os.listdir(self.data_dir)):
             sub_dir_path = op.join(self.data_dir, sub_dir)
@@ -461,7 +461,7 @@ class MetaTriplet(Dataset, TripletDataset):
                 self.samples_per_class.append(files)
                 self.all_files.extend(files)
 
-        print(f'Hack_Triplet classes:{len(self.samples_per_class)}, files:{len(self.all_files)}')
+        print(f'MetaTriplet classes:{len(self.samples_per_class)}, files:{len(self.all_files)}')
         # assert len(self.alphabet) == len(self.samples_per_class)
 
     def __getitem__(self, idx: int) -> dict:
