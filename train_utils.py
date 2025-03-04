@@ -302,7 +302,10 @@ def run_training(config, recognizer, optimizer, scheduler,
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}}
         )
 
-        save_plot(stat, save_pt)
+        try:
+            save_plot(stat, save_pt)
+        except Exception as exc:
+            print("save_plot: ", exc)
 
         with open(op.join(save_pt, 'info.txt'), 'a') as info_txt:
             info_txt.write(str(e) + ' ' + str(train_loss) + ' ')

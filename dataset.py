@@ -82,6 +82,7 @@ class SiameseDataset:
     def __init__(self):
         self.samples_per_class = []
         self.meta_data = {}
+        self.meta_coeff = None
 
     def choose_positive_random(self):
         pos_c = np.random.randint(len(self.samples_per_class))
@@ -124,7 +125,7 @@ class SiameseDataset:
         neg_id = np.random.randint(len(self.samples_per_class[neg_c]))
 
         if self.meta_data:
-            if random.uniform(0, 1) < 0.5:
+            if random.uniform(0, 1) < self.meta_coeff:
                 neg_c = np.random.randint(len(self.samples_per_class))
                 while pos_c == neg_c:
                     neg_c = np.random.randint(len(self.samples_per_class))
@@ -412,6 +413,7 @@ class MetaTriplet(Dataset, TripletDataset):
 
         meta_path = op.join(self.data_dir, 'meta.json')
         if op.exists(meta_path):
+            self.meta_coeff = cfg['batch_settings'][dataset_type]['meta_coeff']
             with open(meta_path, 'r') as meta:
                 meta = json.load(meta)
 
