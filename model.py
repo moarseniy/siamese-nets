@@ -58,6 +58,121 @@ class KorNet(torch.nn.Module):
         return x
 
 
+class FaceNet(nn.Module):
+    def __init__(self, embedding_size=128):
+        super(FaceNet, self).__init__()
+
+        # Сверточные слои
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 192, kernel_size=3, stride=1, padding=1)
+        self.bn3 = nn.BatchNorm2d(192)
+        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # Inception-подобные блоки (упрощенные)
+        self.inception3a = InceptionBlock(192, 64, 96, 128, 16, 32, 32)
+        self.inception3b = InceptionBlock(256, 128, 128, 192, 32, 96, 64)
+        self.pool3 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        self.inception4a = InceptionBlock(480, 192, 96, 208, 16, 48, 64)
+        self.inception4b = InceptionBlock(512, 160, 112, 224, 24, 64, 64)
+        self.inception4c = InceptionBlock(512, 128, 128, 256, 24, 64, 64)
+        self.inception4d = InceptionBlock(512, 112, 144, 288, 32, 64, 64)
+        self.inception4e = InceptionBlock(528, 256, 160, 320, 32, 128, 128)
+        self.pool4 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        self.inception5a = InceptionBlock(832, 256, 160, 320, 32, 128, 128)
+        self.inception5b = InceptionBlock(832, 384, 192, 384, 48, 128, 128)
+
+        # Глобальный средний пулинг
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        # Полносвязный слой для эмбеддинга
+        self.fc = nn.Linear(1024, embedding_size)
+
+    def forward(self, x):
+        # Применение сверточных слоев
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.pool1(x)
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = self.pool2(x)
+
+        # Inception-блоки
+        x = self.inception3a(x)
+        x = self.inception3b(x)
+        x = self.pool3(x)
+
+        x = self.inception4a(x)
+        x = self.inception4b(x)
+        x = self.inception4c(x)
+        x = self.inception4d(x)
+        x = self.inception4e(x)
+        x = self.pool4(x)
+
+        x = self.inception5a(x)
+        x = self.inception5b(x)
+
+        # Глобальный средний пулинг
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+
+        # Эмбеддинг
+        x = self.fc(x)
+        # L2-нормализация
+        x = F.normalize(x, p=2, dim=1)
+
+        return x
+
+
+# Упрощенный Inception-блок
+class InceptionBlock(nn.Module):
+    def __init__(self, in_channels, conv1x1, conv3x3_reduce, conv3x3, conv5x5_reduce, conv5x5, pool_proj):
+        super(InceptionBlock, self).__init__()
+
+        # Ветка 1x1 свертки
+        self.branch1 = nn.Sequential(
+            nn.Conv2d(in_channels, conv1x1, kernel_size=1),
+            nn.BatchNorm2d(conv1x1),
+            nn.ReLU(inplace=True)
+        )
+
+        # Ветка 3x3 свертки
+        self.branch2 = nn.Sequential(
+            nn.Conv2d(in_channels, conv3x3_reduce, kernel_size=1),
+            nn.BatchNorm2d(conv3x3_reduce),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(conv3x3_reduce, conv3x3, kernel_size=3, padding=1),
+            nn.BatchNorm2d(conv3x3),
+            nn.ReLU(inplace=True)
+        )
+
+        # Ветка 5x5 свертки
+        self.branch3 = nn.Sequential(
+            nn.Conv2d(in_channels, conv5x5_reduce, kernel_size=1),
+            nn.BatchNorm2d(conv5x5_reduce),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(conv5x5_reduce, conv5x5, kernel_size=5, padding=2),
+            nn.BatchNorm2d(conv5x5),
+            nn.ReLU(inplace=True)
+        )
+
+        # Ветка пулинга
+        self.branch4 = nn.Sequential(
+            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(in_channels, pool_proj, kernel_size=1),
+            nn.BatchNorm2d(pool_proj),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return torch.cat([self.branch1(x), self.branch2(x), self.branch3(x), self.branch4(x)], 1)
+
+
 class OneShotNet(nn.Module):
     """
     A Convolutional Siamese Network for One-Shot Learning.
@@ -242,24 +357,25 @@ class LightweightEmbeddingNet2(nn.Module):
 class ResNet50(nn.Module):
     def __init__(self, image_size, pretrained=True):
         super(ResNet50, self).__init__()
-        self.resnet = models.resnet50(pretrained=pretrained)
+        self.resnet50 = models.resnet50(pretrained=pretrained)
 
-        self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
+        # self.resnet50 = nn.Sequential(*list(self.resnet.children())[:-1])
+        num_features = self.resnet50.fc.in_features
 
-        dummy_input = torch.zeros(1, image_size['channels'], image_size['height'], image_size['width'])
-        flattened_size = self._get_flattened_size(dummy_input)
+        self.resnet50.fc = nn.Linear(num_features, image_size['output_dim'])
+        # dummy_input = torch.zeros(1, image_size['channels'], image_size['height'], image_size['width'])
+        # flattened_size = self._get_flattened_size(dummy_input)
 
-        self.fc = nn.Linear(flattened_size, image_size['output_dim'])
+        # self.fc = nn.Linear(flattened_size, image_size['output_dim'])
         self.normalize = nn.functional.normalize
 
-    def _get_flattened_size(self, x):
-        x = self.resnet(x)
-        return x.view(1, -1).size(1)
+    # def _get_flattened_size(self, x):
+    #     x = self.resnet50(x)
+    #     return x.view(1, -1).size(1)
 
     def forward(self, x):
-        x = self.resnet(x).squeeze()
-        x = self.fc(x)
-        x = self.normalize(x, p=2, dim=1)
+        x = self.resnet50(x)
+        x = self.normalize(x, p=2, dim=-1)
         return x
 
 
@@ -478,6 +594,8 @@ def ChooseModel(model_name: str, image_size: dict):
         return MobileNetV2(image_size).cuda()
     elif model_name == "OSNet":
         return OSNet(image_size).cuda()
+    elif model_name == "FaceNet":
+        return FaceNet().cuda()
     else:
         print("Model is not defined!!!")
         exit(-1)

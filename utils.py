@@ -1,5 +1,10 @@
 import os
+
+# hack to avoid errors with tkinter
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
 import os.path as op
 from datetime import datetime
 

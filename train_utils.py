@@ -17,6 +17,7 @@ import torchvision
 from torchvision.utils import save_image
 from eval_model import *
 from loss import ChooseLoss
+from metrics import compute_eer, compute_similarity
 from utils import save_plot
 
 def Dataloader_by_Index(data_loader, target=0):
@@ -122,7 +123,7 @@ def go_metric_train(train_loader, config, recognizer, optimizer, loss, save_im_p
     return train_loss / len(train_loader)
 
 
-def go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type):
+def go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type, sim_list, lbl_list):
     batch_count = config["batch_settings"]["test"]["iterations"]
     elements_per_batch = config["batch_settings"]["test"]["elements_per_batch"]
     minibatch_size = config["minibatch_size"]
@@ -154,6 +155,13 @@ def go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_ty
                 anc_out = recognizer(anc_img)
                 pos_out = recognizer(pos_img)
                 neg_out = recognizer(neg_img)
+
+                sim_list.extend(compute_similarity(anc_out, pos_out))
+                lbl_list += torch.ones(anc_out.size(0)).tolist()
+                sim_list.extend(compute_similarity(pos_out, neg_out))
+                lbl_list += torch.ones(anc_out.size(0)).tolist()
+                sim_list.extend(compute_similarity(anc_out, neg_out))
+                lbl_list += torch.zeros(anc_out.size(0)).tolist()
 
                 if config["save_images"] and idx == 0 and mb_idx == 0:
                     save_image(anc_img[0], os.path.join(save_im_pt, str(e) + '_test_anc_' +
@@ -227,6 +235,7 @@ def run_training(config, recognizer, optimizer, scheduler,
             'train_losses': [],
             'valid_losses': [],
             'test_losses': [],
+            'metrics': [],
             'acc': []}
 
     for e in range(start_ep, config['epoch_num']):
@@ -246,11 +255,17 @@ def run_training(config, recognizer, optimizer, scheduler,
         stat['train_losses'].append(train_loss)
 
         print('Epoch {} -> Training Loss({:.2f} sec): {}'.format(e, time.time() - start_time, train_loss))
-        test_loss = 0.0
+        test_loss, metrics = 0.0, 0.0
         if test_loader:
             start_time = time.time()
 
-            test_loss = go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type)
+            sim_list, lbl_list = [], []
+
+            test_loss = go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type, sim_list, lbl_list)
+
+            metrics = compute_eer(lbl_list, sim_list)
+            print(f"EER metric: {metrics}")
+            stat['metrics'].append(metrics)
 
             stat['test_losses'].append(test_loss)
 
@@ -310,7 +325,9 @@ def run_training(config, recognizer, optimizer, scheduler,
         with open(op.join(save_pt, 'info.txt'), 'a') as info_txt:
             info_txt.write(str(e) + ' ' + str(train_loss) + ' ')
             if test_loss:
-                info_txt.write(str(test_loss))
+                info_txt.write(str(test_loss) + ' ')
+            if metrics:
+                info_txt.write(str(metrics))
             info_txt.write('\n')
 
         if (save_ideals and config['batch_settings']['train']['negative_mode'] == "auto_clusters" and

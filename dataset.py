@@ -8,7 +8,6 @@ import time
 import torch
 
 from multiprocessing import Pool, cpu_count
-import matplotlib.pyplot as plt
 import numpy as np
 import ujson as json
 

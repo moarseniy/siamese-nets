@@ -5,42 +5,42 @@
       "params": {"in": 1, "f": [3, 3], "s": [1, 1], "p": [0, 0], "out": 16},
       "batch_norm": true,
       "activation": "ReLU",
-      "dropout": 0.3
+      "dropout": 0.0
     },
     "conv1": {
       "type": "Conv2d",
       "params": {"in": 16, "f": [5, 5], "s": [2, 2], "p": [2, 2], "out": 16},
       "batch_norm": true,
       "activation": "ReLU",
-      "dropout": 0.3
+      "dropout": 0.0
     },
     "conv2": {
       "type": "Conv2d",
       "params": {"in": 16, "f": [3, 3], "s": [1, 1], "p": [1, 1], "out": 16},
       "batch_norm": true,
       "activation": "ReLU",
-      "dropout": 0.3
+      "dropout": 0.0
     },
     "conv3": {
       "type": "Conv2d",
       "params": {"in": 16, "f": [5, 5], "s": [2, 2], "p": [2, 2], "out": 24},
       "batch_norm": true,
       "activation": "ReLU",
-      "dropout": 0.3
+      "dropout": 0.0
     },
     "conv4": {
       "type": "Conv2d",
       "params": {"in": 24, "f": [3, 3], "s": [1, 1], "p": [1, 1], "out": 24},
       "batch_norm": true,
       "activation": "ReLU",
-      "dropout": 0.3
+      "dropout": 0.0
     },
     "conv5": {
       "type": "Conv2d",
       "params": {"in": 24, "f": [3, 3], "s": [1, 1], "p": [1, 1], "out": 24},
       "batch_norm": true,
       "activation": "ReLU",
-      "dropout": 0.3
+      "dropout": 0.0
     },
     "output": {
       "type": "Linear",

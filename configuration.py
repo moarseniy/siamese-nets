@@ -106,6 +106,7 @@ handlers = {
 activations = {
         'ReLU': nn.ReLU(),
         'Sigmoid': nn.Sigmoid(),
+        'LeakyReLU': nn.LeakyReLU(0.1)
     }
 
 def build_torch_model(arch, input_shape):
