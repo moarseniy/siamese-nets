@@ -1,0 +1,66 @@
+{
+  "layers": {
+    "conv1": {
+      "type": "Conv2d",
+      "params": {"in": 3, "f": [3, 3], "s": [1, 1], "p": [1, 1], "out": 8},
+      "batch_norm": true,
+      "activation": "ReLU",
+      "dropout": 0.0
+    },
+    "pool1": {
+      "type": "MaxPool2d",
+      "params": {"kernel_size": [2, 2]}
+    },
+    "conv2": {
+      "type": "Conv2d",
+      "params": {"in": 8, "f": [5, 5], "s": [1, 1], "p": [2, 2], "out": 8},
+      "batch_norm": true,
+      "activation": "ReLU",
+      "dropout": 0.0
+    },
+    "pool2": {
+      "type": "MaxPool2d",
+      "params": {"kernel_size": [2, 2]}
+    },
+    "conv3": {
+      "type": "Conv2d",
+      "params": {"in": 8, "f": [5, 5], "s": [1, 1], "p": [2, 2], "out": 16},
+      "batch_norm": true,
+      "activation": "ReLU",
+      "dropout": 0.0
+    },
+    "pool3": {
+      "type": "MaxPool2d",
+      "params": {"kernel_size": [2, 2]}
+    },
+    "conv4": {
+      "type": "Conv2d",
+      "params": {"in": 16, "f": [5, 5], "s": [1, 1], "p": [2, 2], "out": 16},
+      "batch_norm": true,
+      "activation": "ReLU",
+      "dropout": 0.0
+    },
+    "pool4": {
+      "type": "MaxPool2d",
+      "params": {"kernel_size": [4, 4]}
+    },
+    "output": {
+      "type": "Linear",
+      "params": {"out": 32},
+      "activation": "LeakyReLU",
+      "dropout": 0.0
+    }
+  },
+  "connections": {
+    "conv1": "input",
+    "pool1": "conv1",
+    "conv2": "pool1",
+    "pool2": "conv2",
+    "conv3": "pool2",
+    "pool3": "conv3",
+    "conv4": "pool3",
+    "pool4": "conv4",
+    "fc1": "pool4",
+    "output": "fc1"
+  }
+}
