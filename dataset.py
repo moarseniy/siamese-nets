@@ -53,9 +53,6 @@ def ChooseDataset(dataset_type: str, cfg: dict, augmentation: dict) -> Dataset:
     elif cfg[dataset_type]["name"] == "Common":
         if mode == 'triplet':
             return CommonTriplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
-    elif cfg[dataset_type]["name"] == "Meta":
-        if mode == 'triplet':
-            return MetaTriplet(dataset_type=dataset_type, cfg=cfg, augmentation=augmentation)
     else:
         print("Dataset name is not defined!!!")
         exit(-1)
@@ -274,7 +271,8 @@ class TripletDataset(SiameseDataset):
             triplet_imgs.append(transform(image))
             triplet_lbls.append(torch.tensor(c))
 
-        return {"image": torch.stack(triplet_imgs), "label": torch.stack(triplet_lbls)}
+        return {"image": torch.stack(triplet_imgs),
+                "label": torch.stack(triplet_lbls)}
 
 
 class PHD08ValidDataset(Dataset):
@@ -356,60 +354,6 @@ class CommonTriplet(Dataset, TripletDataset):
         self.clusters = []
         self.probs_vec = None
 
-        if "positive_mode" in cfg['batch_settings'][dataset_type] and \
-                "negative_mode" in cfg['batch_settings'][dataset_type]:
-
-            self.positive_mode = cfg['batch_settings'][dataset_type]['positive_mode']
-            self.negative_mode = cfg['batch_settings'][dataset_type]['negative_mode']
-
-            if self.negative_mode == "auto_clusters":
-                self.inner_imp_prob = cfg['batch_settings'][dataset_type]['inner_imp_prob']
-                self.raw_clusters = cfg['batch_settings'][dataset_type]['raw_clusters']
-                self.cluster_max_size = cfg['batch_settings'][dataset_type]['cluster_max_size']
-
-        if "alphabet" in cfg:
-            self.alphabet, self.alph_dict = prepare_alph(cfg["alph_pt"])
-            self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
-
-        self.all_files, self.samples_per_class = [], []
-        print("======= LOADING DATA(Common_Triplet) =======")
-
-        for sub_dir in os.listdir(self.data_dir):
-            for class_dir in os.listdir(op.join(self.data_dir, sub_dir)):
-                files = os.listdir(op.join(self.data_dir, sub_dir, class_dir))
-                files = [op.join(self.data_dir, sub_dir, class_dir, fi) for fi in files]
-
-                self.samples_per_class.append(files)
-                self.all_files.extend(files)
-        print(f'Common_Triplet classes:{len(self.samples_per_class)}, files:{len(self.all_files)}')
-        # assert len(self.alphabet) == len(self.samples_per_class)
-
-    def __getitem__(self, idx: int) -> dict:
-        return self.generateItem(idx)
-
-    def __len__(self) -> int:
-        return self.batch_count * self.elements_per_batch  # len(self.all_files)
-
-    def get_alph(self) -> list:
-        return self.alphabet
-
-
-class MetaTriplet(Dataset, TripletDataset):
-    def __init__(self, dataset_type: str, cfg: dict, augmentation: dict):
-        super().__init__()
-        self.augmentation = augmentation
-        self.dataset_type = dataset_type
-        self.image_size = cfg['image_size']
-
-        self.type = cfg['loss_settings']['type']
-        self.data_dir = cfg[dataset_type]['path']
-        self.gen_imp_ratio = cfg['batch_settings'][dataset_type]['gen_imp_ratio']
-        self.elements_per_batch = cfg['batch_settings'][dataset_type]['elements_per_batch']
-        self.batch_count = cfg['batch_settings'][dataset_type]['iterations']
-
-        self.clusters = []
-        self.probs_vec = None
-
         meta_path = op.join(self.data_dir, 'meta.json')
         if op.exists(meta_path):
             self.meta_coeff = cfg['batch_settings'][dataset_type]['meta_coeff']
@@ -448,7 +392,7 @@ class MetaTriplet(Dataset, TripletDataset):
             self.probs_vec = torch.empty(self.get_alph_size()).fill_(1.0 / self.get_alph_size()).cuda()
 
         self.all_files, self.samples_per_class = [], []
-        print(f'======= LOADING DATA(MetaTriplet) =======({self.data_dir}')
+        print(f'======= LOADING DATA(CommonTriplet) =======({self.data_dir})')
 
         for sub_dir in sorted(os.listdir(self.data_dir)):
             sub_dir_path = op.join(self.data_dir, sub_dir)
