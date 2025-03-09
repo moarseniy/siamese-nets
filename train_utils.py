@@ -43,6 +43,117 @@ def ChooseScheduler(cfg, optimizer):
         print("Unknown scheduler type!")
         return None
 
+def Dataloader_by_Index(data_loader, target=0):
+    for index, data in enumerate(data_loader, target):
+        return data
+    return None
+
+def go_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
+                    save_ideals, ideals, counter, dists, loss_type):
+
+    batch_count = config["batch_settings"]["train"]["iterations"]
+    elements_per_batch = config["batch_settings"]["train"]["elements_per_batch"]
+    minibatch_size = config["minibatch_size"]
+    train_mb_count = elements_per_batch / minibatch_size
+
+    train_loss = 0.0
+    pbar = tqdm(range(batch_count))
+    for idx in pbar:
+        mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
+        mb_img = mb['image'].cuda()
+        mb_lbl = mb['label'].cuda()
+        # print(mb_img, mb_lbl)
+        # exit(-1)
+
+        anc_img, pos_img, neg_img = mb_img[:, 0], mb_img[:, 1], mb_img[:, 2]
+        anc_lbl, pos_lbl, neg_lbl = mb_lbl[:, 0], mb_lbl[:, 1], mb_lbl[:, 2]
+
+        assert torch.equal(anc_lbl, pos_lbl)
+
+        anc_out = recognizer(anc_img)
+        pos_out = recognizer(pos_img)
+        neg_out = recognizer(neg_img)
+
+        if save_ideals:
+            for out, lbl in ((anc_out, anc_lbl), (pos_out, pos_lbl), (neg_out, neg_lbl)):
+                # print(ideals.size(), lbl.size(), out.size())
+                ideals.scatter_add_(0, lbl.unsqueeze(1).expand(-1, ideals.size(1)), out.detach())
+
+                counter += torch.bincount(lbl, minlength=ideals.size(0))
+
+                dists.scatter_add_(0, lbl,
+                                   torch.nn.functional.pairwise_distance(out.detach(), ideals[lbl]))
+
+        if config["save_images"] and idx == 0 and idx == 0:
+            save_image(anc_img[0], os.path.join(save_im_pt, str(e) + '_train_anc_' +
+                                                str(int(anc_lbl[0])) + '.png'))
+            save_image(pos_img[0], os.path.join(save_im_pt, str(e) + '_train_pos_' +
+                                                str(int(pos_lbl[0])) + '.png'))
+            save_image(neg_img[0], os.path.join(save_im_pt, str(e) + '_train_neg_' +
+                                                str(int(neg_lbl[0])) + '.png'))
+
+        cur_loss = loss(anc_out, pos_out, neg_out)
+
+        optimizer.zero_grad()
+        cur_loss.backward()
+        optimizer.step()
+
+        train_loss += cur_loss.item()
+
+        pbar.set_description("Epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+
+    pbar.close()
+    return train_loss / len(train_loader)
+
+def go_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type, sim_list, lbl_list):
+
+    batch_count = config["batch_settings"]["test"]["iterations"]
+    elements_per_batch = config["batch_settings"]["test"]["elements_per_batch"]
+    minibatch_size = config["minibatch_size"]
+    train_mb_count = elements_per_batch / minibatch_size
+
+    test_loss = 0.0
+    pbar = tqdm(range(batch_count))
+    for idx in pbar:
+        mb = Dataloader_by_Index(test_loader, torch.randint(len(test_loader), size=(1,)).item())
+        mb_img = mb['image'].cuda()
+        mb_lbl = mb['label'].cuda()
+        # print(mb_img, mb_lbl)
+        # exit(-1)
+
+        anc_img, pos_img, neg_img = mb_img[:, 0], mb_img[:, 1], mb_img[:, 2]
+        anc_lbl, pos_lbl, neg_lbl = mb_lbl[:, 0], mb_lbl[:, 1], mb_lbl[:, 2]
+
+        assert torch.equal(anc_lbl, pos_lbl)
+
+        anc_out = recognizer(anc_img)
+        pos_out = recognizer(pos_img)
+        neg_out = recognizer(neg_img)
+
+        sim_list.extend(compute_similarity(anc_out, pos_out))
+        lbl_list += torch.ones(anc_out.size(0)).tolist()
+        sim_list.extend(compute_similarity(pos_out, neg_out))
+        lbl_list += torch.ones(anc_out.size(0)).tolist()
+        sim_list.extend(compute_similarity(anc_out, neg_out))
+        lbl_list += torch.zeros(anc_out.size(0)).tolist()
+
+        if config["save_images"] and idx == 0 and idx == 0:
+            save_image(anc_img[0], os.path.join(save_im_pt, str(e) + '_test_anc_' +
+                                                str(int(anc_lbl[0])) + '.png'))
+            save_image(pos_img[0], os.path.join(save_im_pt, str(e) + '_test_pos_' +
+                                                str(int(pos_lbl[0])) + '.png'))
+            save_image(neg_img[0], os.path.join(save_im_pt, str(e) + '_test_neg_' +
+                                                str(int(neg_lbl[0])) + '.png'))
+
+        cur_loss = loss(anc_out, pos_out, neg_out)
+
+        test_loss += cur_loss.item()
+
+        pbar.set_description("Epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
+
+    pbar.close()
+    return test_loss / len(test_loader)
+
 def go_metric_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
                     save_ideals, ideals, counter, dists, loss_type):
 
@@ -194,7 +305,7 @@ def run_training(config, recognizer, optimizer, scheduler,
 
     train_loader = DataLoader(dataset=train_dataset,
                               batch_size=config['batch_settings']['train']['elements_per_batch'],
-                              shuffle=False,
+                              shuffle=True,
                               num_workers=num_workers)
     print(f"Train DataLoader is initialized with {len(train_loader)} batches")
 
@@ -202,7 +313,7 @@ def run_training(config, recognizer, optimizer, scheduler,
     if test_dataset:
         test_loader = DataLoader(dataset=test_dataset,
                                  batch_size=config['batch_settings']['test']['elements_per_batch'],
-                                 shuffle=False,
+                                 shuffle=True,
                                  num_workers=num_workers)
         print(f"Test DataLoader is initialized with {len(test_loader)} batches")
 
@@ -246,7 +357,7 @@ def run_training(config, recognizer, optimizer, scheduler,
         if save_ideals:
             ideals = (ideals.T * counter).T
 
-        train_loss = go_metric_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
+        train_loss = go_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
                                      save_ideals, ideals, counter, dists, loss_type)
 
         if save_ideals:
@@ -261,7 +372,7 @@ def run_training(config, recognizer, optimizer, scheduler,
 
             sim_list, lbl_list = [], []
 
-            test_loss = go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type, sim_list, lbl_list)
+            test_loss = go_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type, sim_list, lbl_list)
 
             metrics = compute_eer(lbl_list, sim_list)
             print(f"EER metric: {metrics}")

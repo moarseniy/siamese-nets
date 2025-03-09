@@ -406,14 +406,14 @@ class CommonTriplet(Dataset, TripletDataset):
                 self.samples_per_class.append(files)
                 self.all_files.extend(files)
 
-        print(f'MetaTriplet classes:{len(self.samples_per_class)}, files:{len(self.all_files)}')
+        print(f'CommonTriplet classes:{len(self.samples_per_class)}, files:{len(self.all_files)}')
         # assert len(self.alphabet) == len(self.samples_per_class)
 
     def __getitem__(self, idx: int) -> dict:
         return self.generateItem(idx)
 
     def __len__(self) -> int:
-        return self.batch_count * self.elements_per_batch  # len(self.all_files)
+        return len(self.all_files) #self.batch_count * self.elements_per_batch  # len(self.all_files)
 
     def get_alph(self) -> list:
         return self.alphabet
@@ -789,7 +789,7 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
                 "label": torch.stack(triplet_lbls)}
 
     def __len__(self) -> int:
-        return self.batch_count * self.elements_per_batch
+        return len(self.all_files) #self.batch_count * self.elements_per_batch
 
     def get_alph(self) -> list:
         return self.alphabet
