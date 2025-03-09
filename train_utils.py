@@ -18,7 +18,7 @@ from torchvision.utils import save_image
 from eval_model import *
 from loss import ChooseLoss
 from metrics import compute_eer, compute_similarity
-from utils import save_plot
+from utils import save_plot, kill_if_memory_usage_above
 
 def Dataloader_by_Index(data_loader, target=0):
     for index, data in enumerate(data_loader, target):
@@ -181,7 +181,7 @@ def go_metric_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_ty
 
     return test_loss / len(test_loader)
 
-
+@kill_if_memory_usage_above(70)
 def run_training(config, recognizer, optimizer, scheduler,
                  train_dataset, test_dataset, valid_dataset,
                  save_pt, save_im_pt, start_ep):

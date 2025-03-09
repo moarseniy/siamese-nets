@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 
 import os.path as op
 from datetime import datetime
+import psutil
+import functools
 
 def prepare_dirs(repo_dir, config, device_num):
     save_paths = {}
@@ -62,3 +64,25 @@ def save_plot(stat, save_pt):
     plt.grid(True)
     plt.savefig(op.join(save_pt, 'graph.png'))
     plt.close()
+
+
+def kill_if_memory_usage_above(threshold):
+    """
+    Декоратор, который завершает выполнение функции, если использование оперативной памяти
+    превышает заданный порог (в процентах).
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            # Получаем текущее использование оперативной памяти в процентах
+            memory_usage = psutil.virtual_memory().percent
+
+            # Если использование памяти превышает порог, завершаем выполнение функции
+            if memory_usage > threshold:
+                print(f"Memory usage is above {threshold}%. Stopping the function.")
+                return  # Прекращаем выполнение функции
+
+            # Иначе выполняем функцию
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator

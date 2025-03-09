@@ -15,7 +15,8 @@ def load_model_from_config(config_path, input_size):
     c, h, w = input_size['channels'], input_size['height'], input_size['width']
     with open(config_path, 'r') as f:
         config = json.load(f)
-    return configure_model(config, [c, h, w]).cuda()
+    model = configure_model(config, [c, h, w])
+    return model.cuda()
 
 class SymReLU(torch.nn.Module):
     def __init__(self):
