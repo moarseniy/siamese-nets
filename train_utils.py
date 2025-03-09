@@ -103,7 +103,7 @@ def go_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
         pbar.set_description("Epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
 
     pbar.close()
-    return train_loss / len(train_loader)
+    return train_loss / batch_count # len(train_loader)
 
 def go_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type, sim_list, lbl_list):
 
@@ -152,7 +152,7 @@ def go_test(test_loader, config, recognizer, loss, save_im_pt, e, loss_type, sim
         pbar.set_description("Epoch %d Test [Loss %.6f]" % (e, cur_loss.item()))
 
     pbar.close()
-    return test_loss / len(test_loader)
+    return test_loss / batch_count
 
 def go_metric_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
                     save_ideals, ideals, counter, dists, loss_type):
