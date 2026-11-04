@@ -1,0 +1,51 @@
+{
+  "layers": {
+    "conv1": {
+      "type": "Conv2d",
+      "params": {"in": 3, "f": [3, 3], "s": [1, 1], "p": [1, 1], "out": 8},
+      "batch_norm": true,
+      "activation": "ReLU",
+      "dropout": 0.0
+    },
+    "conv2": {
+      "type": "Conv2d",
+      "params": {"in": 8, "f": [5, 5], "s": [1, 1], "p": [2, 2], "out": 8},
+      "batch_norm": true,
+      "activation": "ReLU",
+      "dropout": 0.0
+    },
+    "conv3": {
+      "type": "Conv2d",
+      "params": {"in": 8, "f": [5, 5], "s": [1, 1], "p": [2, 2], "out": 16},
+      "batch_norm": true,
+      "activation": "ReLU",
+      "dropout": 0.0
+    },
+    "conv4": {
+      "type": "Conv2d",
+      "params": {"in": 16, "f": [5, 5], "s": [1, 1], "p": [2, 2], "out": 16},
+      "batch_norm": true,
+      "activation": "ReLU",
+      "dropout": 0.0
+    },
+    "fc1": {
+      "type": "Linear",
+      "params": {"out": 16},
+      "activation": "LeakyReLU",
+      "dropout": 0.5
+    },
+    "output": {
+      "type": "Linear",
+      "params": {"out": 2},
+      "activation": "None"
+    }
+  },
+  "connections": {
+    "conv1": "input",
+    "conv2": "conv1",
+    "conv3": "conv2",
+    "conv4": "conv3",
+    "fc1": "conv4",
+    "output": "fc1"
+  }
+}

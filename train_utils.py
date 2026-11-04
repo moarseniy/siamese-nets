@@ -4,7 +4,7 @@ import os.path as op
 from tqdm import tqdm
 import cv2
 from itertools import cycle, islice
-import torch
+import torch, gc
 
 from jinja2.optimizer import optimize
 from torch.utils.data import DataLoader
@@ -48,6 +48,9 @@ def Dataloader_by_Index(data_loader, target=0):
         return data
     return None
 
+def get_tensor_mem(tensor):
+    return (tensor.numel() * tensor.element_size()) / (1024 ** 2)
+
 def go_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
                     save_ideals, ideals, counter, dists, loss_type):
 
@@ -56,12 +59,13 @@ def go_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
     minibatch_size = config["minibatch_size"]
     train_mb_count = elements_per_batch / minibatch_size
 
+
     train_loss = 0.0
     pbar = tqdm(range(batch_count))
     for idx in pbar:
         mb = Dataloader_by_Index(train_loader, torch.randint(len(train_loader), size=(1,)).item())
-        mb_img = mb['image'].cuda()
-        mb_lbl = mb['label'].cuda()
+        mb_img = mb['image'].to(device="cuda", non_blocking=True)
+        mb_lbl = mb['label'].to(device="cuda", non_blocking=True)
         # print(mb_img, mb_lbl)
         # exit(-1)
 
@@ -101,6 +105,10 @@ def go_train(train_loader, config, recognizer, optimizer, loss, save_im_pt, e,
         train_loss += cur_loss.item()
 
         pbar.set_description("Epoch %d Train [Loss %.6f]" % (e, cur_loss.item()))
+
+    torch.cuda.empty_cache()
+    del anc_out, pos_out, neg_out, cur_loss
+    gc.collect()
 
     pbar.close()
     return train_loss / batch_count # len(train_loader)
