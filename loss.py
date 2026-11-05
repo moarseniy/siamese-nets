@@ -4,18 +4,17 @@ from torch import nn
 def ChooseLoss(cfg):
     loss_type = cfg["type"]
     if loss_type == 'triplet':
-        loss = nn.TripletMarginLoss(margin=cfg['alpha_margin']).cuda()
-    elif loss_type == 'contrastive':
-        loss = ContrastiveLoss(margin=cfg['alpha_margin']).cuda()
+        loss = nn.TripletMarginLoss(margin=cfg['alpha_margin'])
+    elif loss_type in ('contrastive', 'pair'):
+        loss = ContrastiveLoss(margin=cfg['alpha_margin'])
     elif loss_type == 'BCELoss':
-        loss = nn.BCELoss().cuda()
+        loss = nn.BCELoss()
     elif loss_type == 'BCEWithLogitsLoss':
-        loss = nn.BCEWithLogitsLoss().cuda()
+        loss = nn.BCEWithLogitsLoss()
     elif loss_type == 'metric':
         loss = MetricLoss(margin=cfg['alpha_margin'])
     else:
-        print('No Loss found!')
-        exit(-1)
+        raise ValueError(f"Unknown loss type: {loss_type!r}")
     return loss
 
 
@@ -26,6 +25,7 @@ class ContrastiveLoss(nn.Module):
 
     def forward(self, output1, output2, label):
         euclidean_distance = nn.functional.pairwise_distance(output1, output2)
+        label = label.to(device=euclidean_distance.device, dtype=euclidean_distance.dtype).view(-1)
         pos = (1 - label) * torch.pow(euclidean_distance, 2)
         neg = (label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)
 

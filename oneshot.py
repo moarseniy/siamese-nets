@@ -20,6 +20,7 @@ def preprocess_image(image_path, transform):
     image = Image.open(image_path).convert("L")
     return transform(image)
 
+@torch.no_grad()
 def run_oneshot(model, run_folder, transform):
     training_path = os.path.join(run_folder, "training")
     test_path = os.path.join(run_folder, "test")
@@ -33,24 +34,19 @@ def run_oneshot(model, run_folder, transform):
     support_tensors = torch.stack(support_tensors)
     query_tensors = torch.stack(query_tensors)
 
-    correct = 0
-    total = 0
+    if not support_tensors.size(0) or not query_tensors.size(0):
+        raise ValueError(f"One-shot run has no support or query images: {run_folder}")
 
-    with torch.no_grad():
-        for query_tensor, query_label in zip(query_tensors, query_labels):
-            query_tensor = query_tensor.unsqueeze(0)  # add batch-dim
-
-            distances = []
-            for support_tensor in support_tensors:
-                support_tensor = support_tensor.unsqueeze(0)
-                distance = model(query_tensor, support_tensor)
-                distances.append(distance.item())
-
-            predicted_label = support_labels[torch.argmin(torch.tensor(distances))]
-
-            if predicted_label == query_label:
-                correct += 1
-            total += 1
+    device = next(model.parameters()).device
+    support_tensors = support_tensors.to(device)
+    query_tensors = query_tensors.to(device)
+    encoder = getattr(model, 'sub_forward', model)
+    support_embeddings = encoder(support_tensors)
+    query_embeddings = encoder(query_tensors)
+    nearest_support = torch.cdist(query_embeddings, support_embeddings).argmin(dim=1).cpu().tolist()
+    predicted_labels = [support_labels[index] for index in nearest_support]
+    correct = sum(predicted == actual for predicted, actual in zip(predicted_labels, query_labels))
+    total = len(query_labels)
 
     accuracy = correct / total
     return accuracy

@@ -4,7 +4,7 @@ from sklearn.metrics import roc_curve
 
 def compute_eer(label, pred, positive_label=1):
     # all fpr, tpr, fnr, fnr, threshold are lists (in the format of np.array)
-    fpr, tpr, threshold = roc_curve(label, pred)
+    fpr, tpr, threshold = roc_curve(label, pred, pos_label=positive_label)
     fnr = 1 - tpr
 
     # the threshold of fnr == fpr
@@ -19,5 +19,6 @@ def compute_eer(label, pred, positive_label=1):
     return eer
 
 def compute_similarity(embed1, embed2):
-    return F.cosine_similarity(embed1, embed2, dim=1).detach().cpu().numpy().tolist()
-    
+    # Training losses compare Euclidean distances; negate them so larger scores
+    # consistently indicate a more similar pair for ROC/EER computation.
+    return (-F.pairwise_distance(embed1, embed2)).detach().cpu().numpy().tolist()

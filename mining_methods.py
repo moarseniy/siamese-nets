@@ -1,150 +1,123 @@
+import json
+
 import torch
-import json, time
-from tqdm import tqdm
 
 
 def generate_sym_probs(dists, ideals, counter, probs_vec, w, gamma):
-    alph_size = ideals.size()[0]
-    if probs_vec.size() == alph_size:
-        probs_vec.resize(alph_size)
-        probs_vec[:] = 1.0 / alph_size
+    """Return a normalized class-sampling distribution from current class distances."""
+    class_count = ideals.size(0)
+    if class_count == 0:
+        return torch.empty(0, dtype=torch.float32)
 
-    amp_dists = torch.pow(dists, gamma)
-    p = amp_dists / torch.sum(amp_dists)
-    probs_vec = torch.pow((1 - w) * p + w * probs_vec, gamma)
+    weights = torch.as_tensor(dists, dtype=torch.float32).detach().cpu().clamp_min(0)
+    if weights.numel() != class_count or not torch.isfinite(weights).all() or weights.sum() <= 0:
+        return torch.full((class_count,), 1.0 / class_count)
+
+    weights = weights.pow(gamma)
+    weights = weights / weights.sum()
+    previous = torch.as_tensor(probs_vec, dtype=torch.float32).detach().cpu()
+    if previous.numel() != class_count or not torch.isfinite(previous).all() or previous.sum() <= 0:
+        previous = torch.full((class_count,), 1.0 / class_count)
+    else:
+        previous = previous / previous.sum()
+
+    probabilities = ((1 - w) * weights + w * previous).clamp_min(0)
+    probabilities = probabilities.pow(gamma)
+    total = probabilities.sum()
+    return probabilities / total if total > 0 else torch.full((class_count,), 1.0 / class_count)
 
 
-def save_sym_probs(out_path, probs_vec, alphabet):
-    sym_probs = {}
-    for i in range(len(probs_vec.size())):
-        sym_probs[alphabet[i]] = probs_vec[i].item()
-
+def save_sym_probs(out_path, probs_vec, alphabet=None):
+    probs = torch.as_tensor(probs_vec).detach().cpu().flatten()
+    symbols = alphabet if alphabet is not None and len(alphabet) == len(probs) else list(range(len(probs)))
+    sym_probs = {str(symbols[i]): float(probs[i]) for i in range(len(probs))}
     with open(out_path, 'w', encoding='utf8') as json_out:
         json.dump(sym_probs, json_out, indent=2, ensure_ascii=False)
 
 
-def generate_clusters(ideals, raw_clusters, classes_count):
-    if raw_clusters < classes_count:
-        norms_count = raw_clusters
+def generate_clusters(ideals, raw_clusters, classes_count, active_ids=None):
+    """Return closest inter-class centroid pairs as [distance, class_a, class_b]."""
+    classes_count = min(int(classes_count), int(ideals.size(0)))
+    if active_ids is None:
+        class_ids = torch.arange(classes_count, device=ideals.device)
     else:
-        norms_count = min(raw_clusters, classes_count * (classes_count - 1) * 0.5)
+        class_ids = torch.as_tensor(active_ids, device=ideals.device, dtype=torch.long)[:classes_count]
+        classes_count = min(classes_count, class_ids.numel())
+        class_ids = class_ids[:classes_count]
+        ideals = ideals[class_ids]
+    if classes_count < 2 or raw_clusters <= 0:
+        return ideals.new_empty((0, 3))
 
-    norms_res = torch.empty((norms_count, 3)).fill_(1e+10).cuda()
+    pair_count = classes_count * (classes_count - 1) // 2
+    keep_count = min(int(raw_clusters), pair_count)
+    best = ideals.new_empty((0, 3))
 
-    for i in tqdm(range(classes_count - 1)):
-        p0 = ideals[0:classes_count - i - 1, :]
-        p1 = ideals[i + 1:classes_count, :]
+    # Generate one diagonal of the pairwise distance matrix at a time to avoid
+    # allocating an O(classes_count^2) matrix.
+    for offset in range(1, classes_count):
+        left = ideals[:classes_count - offset]
+        right = ideals[offset:classes_count]
+        distances = torch.linalg.vector_norm(left - right, dim=1)
+        left_ids = class_ids[:classes_count - offset]
+        right_ids = class_ids[offset:classes_count]
+        candidates = torch.stack((distances, left_ids.to(distances.dtype),
+                                  right_ids.to(distances.dtype)), dim=1)
+        best = torch.cat((best, candidates), dim=0)
+        if best.size(0) > keep_count:
+            best = best[torch.topk(best[:, 0], k=keep_count, largest=False).indices]
 
-        norms = torch.sqrt(torch.sum((p0 - p1) ** 2, dim=1)).cuda()
-        i_tmp = torch.arange(0, classes_count - i - 1).cuda()
-        j_tmp = torch.arange(i + 1, classes_count).cuda()
-
-        norms = torch.stack((norms, i_tmp, j_tmp), dim=1)
-
-        norms_res = torch.cat((norms_res, norms))
-        _, indices = torch.topk(norms_res[:, 0], k=norms_count, largest=False)
-        norms_res = norms_res[indices]
-
-    # norms_count = None
-    # if raw_clusters < classes_count:
-    #     norms_count = raw_clusters
-    # else:
-    #     norms_count = min(raw_clusters, classes_count * (classes_count - 1) * 0.5)
-    #
-    # norms_res = torch.empty(norms_count).fill_(1e+10).cuda()
-    # i_res = torch.empty(norms_count).fill_(1e+10).cuda()
-    # j_res = torch.empty(norms_count).fill_(1e+10).cuda()
-    # norms_res = torch.stack((norms_res, i_res, j_res), dim=1)
-    #
-
-    # for i in tqdm(range(classes_count - 1)):
-    #     p0 = ideals[0:classes_count - i - 1, :]
-    #     p1 = ideals[i + 1:classes_count, :]
-    #
-    #     norms = torch.sqrt(torch.sum((p0 - p1) ** 2, dim=1)).cuda()
-    #     i_tmp = torch.arange(0, classes_count - i - 1).cuda()
-    #     j_tmp = torch.arange(i + 1, classes_count).cuda()
-    #
-    #     norms = torch.stack((norms, i_tmp, j_tmp), dim=1)
-    #
-    #     norms_res = torch.cat((norms_res, norms))
-    #     norms_res = torch.stack(sorted(norms_res, key=lambda x: x[0]))[:norms_count]
-
-    return norms_res
+    if best.size(0) > keep_count:
+        best = best[torch.topk(best[:, 0], k=keep_count, largest=False).indices]
+    if best.size(0):
+        best = best[torch.argsort(best[:, 0])]
+    return best
 
 
-def merge_clusters(norms_res, merged_clusters, cluster_max_size):
-    # merged_clusters = []
+def merge_clusters(norms_res, merged_clusters=None, cluster_max_size=None):
+    """Build bounded components from nearest-class edges, returning class ids."""
+    clusters = [] if merged_clusters is None else merged_clusters
+    clusters.clear()
+    if norms_res.numel() == 0:
+        return clusters
 
-    for i in tqdm(range(norms_res.size()[0])):
-        class1, class2 = int(norms_res[i][1]), int(norms_res[i][2])
+    parent = {}
+    sizes = {}
 
-        found_class1, found_class2 = False, False
-        idx1, idx2 = None, None
+    def find(value):
+        parent.setdefault(value, value)
+        sizes.setdefault(value, 1)
+        if parent[value] != value:
+            parent[value] = find(parent[value])
+        return parent[value]
 
-        for idx, cluster in enumerate(merged_clusters):
-            if class1 in cluster:
-                found_class1 = True
-                idx1 = idx
-            if class2 in cluster:
-                found_class2 = True
-                idx2 = idx
+    max_size = int(cluster_max_size) if cluster_max_size is not None else 0
+    for row in norms_res.detach().cpu().tolist():
+        class_a, class_b = int(row[1]), int(row[2])
+        root_a, root_b = find(class_a), find(class_b)
+        if root_a == root_b:
+            continue
+        merged_size = sizes[root_a] + sizes[root_b]
+        if max_size > 0 and merged_size > max_size:
+            continue
+        parent[root_b] = root_a
+        sizes[root_a] = merged_size
 
-        if found_class1 and not found_class2:
-            merged_clusters[idx1].append(class2)
-        elif not found_class1 and found_class2:
-            merged_clusters[idx2].append(class1)
-        elif not found_class1 and not found_class2:
-            merged_clusters.append([class1, class2])
-        elif found_class1 and found_class2 and idx1 != idx2:
-            if (len(merged_clusters[idx1]) + len(merged_clusters[idx2])) < cluster_max_size:
-                merged_clusters[idx1].extend(merged_clusters[idx2])
-                merged_clusters.pop(idx2)
-
-    # return merged_clusters
-
-
-def merge_clusters111(norms_res, clusters):
-    clusters = []
-    class1, class2 = None, None
-    for i in tqdm(range(norms_res.size()[0])):
-        class1 = norms_res[i][1]
-        class2 = norms_res[i][2]
-
-        first, second = False, False
-        id1, id2 = None, None
-        for j in range(len(clusters)):
-            if class1 in clusters[j]:
-                first = True
-                id1 = j
-            if class2 in clusters[j]:
-                second = True
-                id2 = j
-
-        if first and not second:
-            clusters[id1].append(class2)
-        elif not first and second:
-            clusters[id2].append(class1)
-        elif not first and not second:
-            clusters.append([class1, class2])
-        elif first and second:
-            if id1 != id2:
-                new_cluster = clusters[id1] + clusters[id2]
-                if id2 < id1:
-                    del clusters[id1]
-                    del clusters[id2]
-                if id1 < id2:
-                    del clusters[id2]
-                    del clusters[id1]
-                clusters.append(new_cluster)
+    components = {}
+    for class_id in parent:
+        components.setdefault(find(class_id), []).append(class_id)
+    clusters.extend(sorted(component) for component in components.values() if len(component) > 1)
+    return clusters
 
 
-def save_clusters(out_path, clusters, alphabet):
+def save_clusters(out_path, clusters, alphabet=None):
     visible_clusters = []
     for cluster in clusters:
         visible_cluster = []
-        for sym in cluster:
-            visible_cluster.append(alphabet[sym])
+        for class_id in cluster:
+            if alphabet is not None and class_id < len(alphabet):
+                visible_cluster.append(alphabet[class_id])
+            else:
+                visible_cluster.append(int(class_id))
         visible_clusters.append(visible_cluster)
 
     with open(out_path, 'w', encoding='utf8') as json_out:

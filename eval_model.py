@@ -48,7 +48,7 @@ def validate_with_descrs(config, recognizer, valid_loader, descrs):
 
 def validate_oneshot(config, recognizer):
     transform = transforms.Compose([
-        transforms.Resize(config["image_size"]["height"], config["image_size"]["height"]),
+        transforms.Resize((config["image_size"]["height"], config["image_size"]["width"])),
         transforms.ToTensor()
     ])
 
@@ -62,6 +62,8 @@ def validate_oneshot(config, recognizer):
             print(f"Accuracy for {run_folder}: {accuracy:.2%}")
             accuracies.append(accuracy)
 
+    if not accuracies:
+        raise ValueError(f"No one-shot run folders found under {all_runs_path}")
     acc = sum(accuracies) / len(accuracies)
     print(f"Overall Accuracy: {acc:.2%}")
 
