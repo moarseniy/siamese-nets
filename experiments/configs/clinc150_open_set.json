@@ -1,0 +1,17 @@
+{
+  "dataset": "clinc150",
+  "manifest": "../manifests/clinc150.json",
+  "protocol": "closed_set",
+  "catalog_protocol": "clinc150",
+  "train_class_key": "classes",
+  "task": "metric",
+  "seed": 20261113,
+  "model": {"modality": "text", "model_name": "FacebookAI/roberta-base", "revision": "e2da8e2f811d1448a5b465c236feacd80ffbac7b", "embedding_dim": 768, "pooling": "mean", "normalize": true, "max_length": 64, "local_files_only": false},
+  "loss": {"type": "catml", "margin": 10.0, "rho": 0.1, "tau": 1.0, "xi": 1.0, "center_mode": "current", "class_weighting": "per_sample"},
+  "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 64, "samples_per_class": 16},
+  "training": {"epochs": 20, "steps_per_epoch": 100, "train_split": "train", "learning_rate": 0.00002, "weight_decay": 0.01},
+  "validation": {"task": "open_set", "class_key": "classes", "catalog_protocol": "clinc150", "gallery_split": "train", "known_query_split": "val", "unknown_query_split": "oos_val", "unknown_label": "oos", "primary_metric": "known_auroc"},
+  "test": {"task": "open_set", "class_key": "classes", "catalog_protocol": "clinc150", "gallery_split": "train", "known_query_split": "test", "unknown_query_split": "oos_test", "unknown_label": "oos"},
+  "evaluation": {"batch_size": 512},
+  "hardware": {"device": 0, "precision": "bf16", "channels_last": false, "num_workers": 8, "prefetch_factor": 4}
+}

@@ -3,6 +3,8 @@ cc/
 venv/
 .idea
 __pycache__/
+experiments/runs/
+experiments/jobs/
 *.py[cod]
 *$py.class
 

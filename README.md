@@ -13,6 +13,20 @@ Older top-level configs in `configs/` are translated to the current schema by
 `train.py`; new experiments should use the `common` schema shown in the current
 configs.
 
+## Planned research experiments
+
+For the CLINC150, CUB-200-2011, Omniglot, and PHD08 plans, use the new
+experiment runner rather than the legacy image-only entry point. It provides
+deterministic class manifests, P×K batches, CATML/APM/Auto-clustering,
+classification and retrieval metrics, and BF16 training options. The plan
+files remain the scientific protocol; the runner records its resolved config
+and manifest in each run folder.
+
+Start with [experiments/README.md](experiments/README.md) for Blackwell setup,
+data manifests, and launch commands. Starter configs are in
+`experiments/configs/`; generated split manifests are in
+`experiments/manifests/`.
+
 ## Loss and sampler settings
 
 Set `common.loss_settings.type` to `triplet` or `contrastive`. Contrastive mode

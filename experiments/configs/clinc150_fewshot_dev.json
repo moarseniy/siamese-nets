@@ -1,0 +1,17 @@
+{
+  "dataset": "clinc150",
+  "manifest": "../manifests/clinc150.json",
+  "protocol": "class_disjoint_retrieval",
+  "catalog_protocol": "clinc150",
+  "train_class_key": "train_classes",
+  "task": "metric",
+  "seed": 20261113,
+  "model": {"modality": "text", "model_name": "FacebookAI/roberta-base", "revision": "e2da8e2f811d1448a5b465c236feacd80ffbac7b", "embedding_dim": 768, "pooling": "mean", "normalize": true, "max_length": 64, "local_files_only": false},
+  "loss": {"type": "catml", "margin": 10.0, "rho": 0.1, "tau": 1.0, "xi": 1.0, "center_mode": "current", "class_weighting": "per_sample"},
+  "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 64, "samples_per_class": 16},
+  "training": {"epochs": 20, "steps_per_epoch": 100, "train_split": "train", "learning_rate": 0.00002, "weight_decay": 0.01},
+  "validation": {"task": "fewshot", "class_key": "validation_classes", "catalog_protocol": "clinc150", "support_split": "gallery", "query_split": "validation_query", "n_way": 5, "k_shot": 1, "query_per_class": 5, "episodes": 200, "prediction": "prototype", "primary_metric": "episode_accuracy"},
+  "test": {"task": "fewshot", "class_key": "test_classes", "catalog_protocol": "clinc150", "support_split": "gallery", "query_split": "test_query", "n_way": 5, "k_shot": 1, "query_per_class": 5, "episodes": 1000, "prediction": "prototype", "checkpoint": "best"},
+  "evaluation": {"batch_size": 512},
+  "hardware": {"device": 0, "precision": "bf16", "channels_last": false, "num_workers": 8, "prefetch_factor": 4}
+}

@@ -1,0 +1,16 @@
+{
+  "dataset": "omniglot",
+  "manifest": "../manifests/omniglot.json",
+  "protocol": "class_disjoint_retrieval",
+  "catalog_protocol": "omniglot_class_disjoint",
+  "train_class_key": "development_train_classes",
+  "task": "metric",
+  "seed": 20261113,
+  "model": {"modality": "image", "backbone": "resnet18", "pretrained": true, "pretrained_weights": "IMAGENET1K_V1", "embedding_dim": 512, "normalize": true, "image_size": 128, "image_channels": 3, "image_mean": [0.485, 0.456, 0.406], "image_std": [0.229, 0.224, 0.225]},
+  "loss": {"type": "catml", "margin": 10.0, "rho": 0.1, "tau": 1.0, "xi": 1.0, "center_mode": "current", "class_weighting": "per_sample", "norm_epsilon": 0.0},
+  "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 128, "samples_per_class": 4},
+  "training": {"epochs": 20, "steps_per_epoch": 20, "train_split": "train", "learning_rate": 0.0001, "weight_decay": 0.0001},
+  "validation": {"task": "retrieval", "class_key": "development_validation_classes", "catalog_protocol": "omniglot_class_disjoint", "gallery_split": "gallery", "query_split": "query", "ks": [1, 2, 4, 8], "primary_metric": "recall@1"},
+  "evaluation": {"batch_size": 2048},
+  "hardware": {"device": 0, "precision": "bf16", "channels_last": true, "num_workers": 8, "prefetch_factor": 4}
+}

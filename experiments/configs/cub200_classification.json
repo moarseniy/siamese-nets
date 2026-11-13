@@ -1,0 +1,17 @@
+{
+  "dataset": "cub200",
+  "manifest": "../manifests/cub200.json",
+  "protocol": "closed_set",
+  "catalog_protocol": "cub200_closed",
+  "train_class_key": "classes",
+  "task": "classification",
+  "seed": 20261113,
+  "model": {"modality": "image", "backbone": "resnet50", "pretrained": true, "pretrained_weights": "IMAGENET1K_V2", "embedding_dim": 512, "normalize": false, "image_size": 224, "image_channels": 3, "image_mean": [0.485, 0.456, 0.406], "image_std": [0.229, 0.224, 0.225]},
+  "loss": {"type": "cross_entropy"},
+  "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 64, "samples_per_class": 4},
+  "training": {"epochs": 20, "steps_per_epoch": 20, "train_split": "train", "learning_rate": 0.0001, "weight_decay": 0.0001},
+  "validation": {"task": "classification", "split": "valid", "primary_metric": "accuracy"},
+  "test": {"task": "classification", "split": "test", "checkpoint": "best"},
+  "evaluation": {"batch_size": 1024},
+  "hardware": {"device": 0, "precision": "bf16", "channels_last": true, "num_workers": 8, "prefetch_factor": 4}
+}

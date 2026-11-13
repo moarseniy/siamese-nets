@@ -1,0 +1,16 @@
+{
+  "dataset": "phd08",
+  "manifest": "../manifests/phd08.json",
+  "protocol": "class_disjoint_retrieval",
+  "catalog_protocol": "phd08_class_disjoint",
+  "train_class_key": "train_classes",
+  "task": "metric",
+  "seed": 20261113,
+  "model": {"modality": "image", "backbone": "kornet2", "pretrained": false, "embedding_dim": 25, "normalize": false, "image_size": 37, "image_channels": 1},
+  "loss": {"type": "catml", "margin": 10.0, "rho": 0.1, "tau": 1.0, "xi": 1.0, "center_mode": "current", "class_weighting": "per_sample", "norm_epsilon": 0.0},
+  "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 256, "samples_per_class": 16},
+  "training": {"epochs": 20, "steps_per_epoch": 500, "train_split": "train", "learning_rate": 0.001, "weight_decay": 0.0},
+  "validation": {"task": "retrieval", "class_key": "validation_classes", "catalog_protocol": "phd08_class_disjoint", "gallery_split": "gallery", "query_split": "query", "ks": [1, 2, 4, 8], "every_n_epochs": 5, "primary_metric": "recall@1"},
+  "evaluation": {"batch_size": 4096},
+  "hardware": {"device": 0, "precision": "bf16", "channels_last": true, "num_workers": 12, "prefetch_factor": 4}
+}

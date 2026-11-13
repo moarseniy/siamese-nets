@@ -1,0 +1,17 @@
+{
+  "dataset": "clinc150",
+  "manifest": "../manifests/clinc150.json",
+  "protocol": "closed_set",
+  "catalog_protocol": "clinc150",
+  "train_class_key": "classes",
+  "task": "classification",
+  "seed": 20261113,
+  "model": {"modality": "text", "model_name": "FacebookAI/roberta-base", "revision": "e2da8e2f811d1448a5b465c236feacd80ffbac7b", "embedding_dim": 768, "pooling": "mean", "normalize": false, "max_length": 64, "local_files_only": false},
+  "loss": {"type": "cross_entropy"},
+  "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 64, "samples_per_class": 16},
+  "training": {"epochs": 20, "steps_per_epoch": 20, "train_split": "train", "learning_rate": 0.00002, "weight_decay": 0.01},
+  "validation": {"task": "classification", "split": "valid", "primary_metric": "accuracy"},
+  "test": {"task": "classification", "split": "test", "checkpoint": "best"},
+  "evaluation": {"batch_size": 1024},
+  "hardware": {"device": 0, "precision": "bf16", "channels_last": false, "num_workers": 8, "prefetch_factor": 4}
+}
