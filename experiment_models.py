@@ -54,7 +54,7 @@ class ImageEncoder(nn.Module):
             from pathlib import Path
             from configuration import configure_model
 
-            config_path = Path(__file__).resolve().parents[1] / "zoo" / "KorNet2.json"
+            config_path = Path(__file__).resolve().parent / "zoo" / "KorNet2.json"
             arch = json.loads(config_path.read_text(encoding="utf-8"))
             feature_dim = int(arch["layers"]["output"]["params"]["out"])
             self.network = configure_model(arch, [self.input_channels, image_size, image_size])

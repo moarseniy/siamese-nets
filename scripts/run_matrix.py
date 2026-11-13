@@ -38,6 +38,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Create an experiment job matrix")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
+    parser.add_argument("--eval-data-root", type=Path, help="Second dataset root for cross-domain evaluation configs")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seeds", default="1,2,3,4,5")
     parser.add_argument("--losses", default="catml,triplet")
@@ -48,16 +49,28 @@ def main() -> None:
     parser.add_argument("--proxy-margin", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, help="Override epoch count for a short pilot")
     parser.add_argument("--steps-per-epoch", type=int, help="Override steps per epoch for a short pilot")
+    parser.add_argument("--k-shot", type=int, help="Override K for few-shot validation and test episodes")
     parser.add_argument("--stage", choices=("development", "final"), default="development")
     parser.add_argument("--run-test", action="store_true", help="Include --run-test on generated commands")
     args = parser.parse_args()
 
     base = json.loads(args.config.read_text(encoding="utf-8"))
+    if (
+        base.get("evaluation_dataset")
+        and base["evaluation_dataset"].get("data_root") is None
+        and args.eval_data_root is None
+    ):
+        parser.error("--eval-data-root is required for configs with evaluation_dataset")
     manifest_path = (args.config.parent / base["manifest"]).resolve()
     base["manifest"] = str(manifest_path)
+    if base.get("evaluation_dataset", {}).get("manifest"):
+        eval_manifest_path = (args.config.parent / base["evaluation_dataset"]["manifest"]).resolve()
+        base["evaluation_dataset"]["manifest"] = str(eval_manifest_path)
     losses, selectors = _csv(args.losses), _csv(args.selectors)
     budgets = _csv(args.examples_per_class)
     seeds = [int(value) for value in _csv(args.seeds)]
+    if args.k_shot is not None and args.k_shot <= 0:
+        raise ValueError("--k-shot must be positive")
     for budget in budgets:
         if budget != "all" and int(budget) <= 0:
             raise ValueError(f"Invalid examples-per-class budget {budget!r}")
@@ -107,6 +120,15 @@ def main() -> None:
                         config["training"]["epochs"] = args.epochs
                     if args.steps_per_epoch is not None:
                         config["training"]["steps_per_epoch"] = args.steps_per_epoch
+                    if args.k_shot is not None:
+                        fewshot_sections = [
+                            section for section in ("validation", "test")
+                            if config.get(section, {}).get("task") == "fewshot"
+                        ]
+                        if not fewshot_sections:
+                            raise ValueError("--k-shot can only be used with few-shot evaluation configs")
+                        for section in fewshot_sections:
+                            config[section]["k_shot"] = args.k_shot
                     if selector in ("auto_clusters", "apm_auto"):
                         config["sampler"].setdefault("cluster_update_steps", 0)
                         config["sampler"].setdefault("cluster_fraction", 0.002)
@@ -136,7 +158,9 @@ def main() -> None:
                     config_path = config_dir / name
                     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                     output_path = run_dir / name.removesuffix(".json")
-                    command = ["python", "-m", "experiments.train", "--config", str(config_path), "--data-root", str(args.data_root), "--output", str(output_path)]
+                    command = ["python", "train.py", "--config", str(config_path), "--data-root", str(args.data_root), "--output", str(output_path)]
+                    if args.eval_data_root is not None:
+                        command.extend(("--eval-data-root", str(args.eval_data_root)))
                     if args.run_test and config.get("test"):
                         command.append("--run-test")
                     jobs.append({"config": str(config_path), "output": str(output_path), "command": shlex.join(command)})

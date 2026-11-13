@@ -6,6 +6,8 @@ from eval_model import *
 import ujson as json
 import argparse
 import random
+import os
+from pathlib import Path
 import numpy as np
 import torch
 
@@ -107,13 +109,45 @@ def normalize_config(config):
     return {'common': common, 'augmentation': config.get('augmentation', {'to_use': False})}
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Siamese models')
-    parser.add_argument('-c', type=str, help='Config model path')
+    parser = argparse.ArgumentParser(description='Siamese and metric-learning experiments')
+    parser.add_argument('-c', '--config', type=str, required=True, help='Legacy or manifest experiment config')
+    parser.add_argument('--data-root', type=str, help='Dataset root for manifest experiment configs')
+    parser.add_argument('--eval-data-root', type=str, help='Second dataset root for cross-domain evaluation configs')
+    parser.add_argument('--output', type=str, help='Run output directory for manifest experiment configs')
+    parser.add_argument('--resume', type=str, help='Checkpoint to resume from')
+    parser.add_argument('--run-test', action='store_true', help='Evaluate the fixed test protocol after training')
+    parser.add_argument('--evaluate-pretrained', action='store_true', help='Evaluate a pretrained/frozen encoder without training')
+    parser.add_argument('--split', choices=('validation', 'test'), default='validation')
+    parser.add_argument('--calibrate-with-validation', action='store_true')
     args = parser.parse_args()
-    config_path = args.c
+    config_path = Path(args.config)
 
     with open(config_path, 'r', encoding='utf8') as cfg_file:
-        cfg = normalize_config(json.load(cfg_file))
+        raw_config = json.load(cfg_file)
+
+    # One project entry point supports both the established `common` schema and
+    # the new benchmark manifests. The legacy path below remains unchanged.
+    if isinstance(raw_config, dict) and 'dataset' in raw_config and 'manifest' in raw_config:
+        from train_utils import evaluate_pretrained_experiment, run_experiment_training
+
+        data_root = args.data_root or raw_config.get('data_root')
+        if not data_root:
+            parser.error('--data-root is required for manifest experiment configs')
+        if args.evaluate_pretrained:
+            if args.run_test or args.resume:
+                parser.error('--evaluate-pretrained cannot be combined with --run-test or --resume')
+            output_path = args.output or str(Path('experiments') / 'runs' / config_path.stem / f"{args.split}.json")
+            evaluate_pretrained_experiment(config_path, data_root, output_path, args.split, args.calibrate_with_validation)
+            raise SystemExit(0)
+        output_dir = args.output or str(Path('experiments') / 'runs' / config_path.stem / f"seed{raw_config.get('seed', 20261113)}")
+        run_experiment_training(config_path, data_root, output_dir, args.resume, args.run_test, args.eval_data_root)
+        raise SystemExit(0)
+
+    if args.run_test or args.evaluate_pretrained or args.calibrate_with_validation or args.split != 'validation' or args.eval_data_root:
+        parser.error('these options are available only for manifest experiment configs')
+    cfg = normalize_config(raw_config)
+    if args.resume:
+        cfg['common']['file_to_start'] = args.resume
 
     if cfg['common'].get('seed') is not None:
         set_seed(int(cfg['common']['seed']))

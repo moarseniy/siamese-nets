@@ -600,3 +600,12 @@ def ChooseModel(model_name: str, image_size: dict):
     else:
         print("Model is not defined!!!")
         exit(-1)
+
+
+# Experiment encoders extend the existing model API without changing legacy
+# checkpoint/model-name behavior.
+from experiment_models import (  # noqa: E402
+    ImageEncoder as ExperimentImageEncoder,
+    TextEncoder as ExperimentTextEncoder,
+    build_encoder as build_experiment_encoder,
+)

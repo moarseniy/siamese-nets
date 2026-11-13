@@ -51,6 +51,7 @@ class ClassSource:
         records: list[SampleRef] | None = None,
         folder: Path | None = None,
         image_split_file: dict[str, str] | None = None,
+        uid_prefix: str | None = None,
     ):
         if records is None and folder is None:
             raise ValueError("ClassSource needs records or a folder")
@@ -59,6 +60,7 @@ class ClassSource:
         self.records = records
         self.folder = folder
         self.image_split_file = image_split_file or {}
+        self.uid_prefix = uid_prefix or label
         self._file_cache: OrderedDict[str, tuple[SampleRef, ...]] = OrderedDict()
 
     def _folder_records(self) -> tuple[SampleRef, ...]:
@@ -73,7 +75,7 @@ class ClassSource:
                 entry.name for entry in entries
                 if entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(allowed)
             )
-        records = tuple(SampleRef(self.label, f"{self.label}/{name}", str(self.folder / name)) for name in names)
+        records = tuple(SampleRef(self.label, f"{self.uid_prefix}/{name}", str(self.folder / name)) for name in names)
         self._file_cache[key] = records
         while len(self._file_cache) > 128:
             self._file_cache.popitem(last=False)
@@ -224,7 +226,24 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_catalog(name: str, root: str | Path, *, hangul_only: bool = True) -> DatasetCatalog:
+def load_kor_alphabet(root: str | Path) -> tuple[list[str], str]:
+    """Read KorSynthetic's indexed alphabet and return its SHA-256 fingerprint."""
+    root = Path(root).expanduser().resolve()
+    class_root = root / "retrieve_mtr_per_class" if (root / "retrieve_mtr_per_class").is_dir() else root
+    alphabet_path = root / "kor_101_mfcr.json" if (root / "kor_101_mfcr.json").exists() else class_root.parent / "kor_101_mfcr.json"
+    payload = json.loads(alphabet_path.read_text(encoding="utf-8"))
+    alphabet = [entry[0] for entry in payload["alphabet"][0]]
+    return alphabet, _file_sha256(alphabet_path)
+
+
+def load_catalog(
+    name: str,
+    root: str | Path,
+    *,
+    hangul_only: bool = True,
+    phd_alphabet: list[str] | None = None,
+    phd_alphabet_sha256: str | None = None,
+) -> DatasetCatalog:
     root = Path(root).expanduser().resolve()
     name = name.lower()
     if name == "clinc150":
@@ -292,22 +311,40 @@ def load_catalog(name: str, root: str | Path, *, hangul_only: bool = True) -> Da
             (path for path in data_root.iterdir() if path.is_dir()),
             key=lambda path: (not path.name.isdigit(), int(path.name) if path.name.isdigit() else path.name),
         )
-        sources = {
-            path.name: ClassSource(path.name, "image", folder=path)
-            for path in class_dirs
-        }
+        sources = {}
+        for path in class_dirs:
+            label = path.name
+            if phd_alphabet is not None:
+                if not path.name.isdigit() or int(path.name) >= len(phd_alphabet):
+                    raise ValueError(f"PHD08 class folder {path.name!r} is not an index in the KorSynthetic alphabet")
+                label = phd_alphabet[int(path.name)]
+                if len(label) != 1 or not 0xAC00 <= ord(label) <= 0xD7A3:
+                    raise ValueError(f"PHD08 folder {path.name} maps to a non-Hangul alphabet symbol {label!r}")
+            if label in sources:
+                raise ValueError(f"PHD08 folder indices do not map one-to-one at symbol {label!r}")
+            sources[label] = ClassSource(label, "image", folder=path, uid_prefix=path.name)
         if not sources:
             raise FileNotFoundError(f"No PHD08 class folders under {data_root}")
         class_hash = hashlib.sha256("\n".join(path.name for path in class_dirs).encode("utf-8")).hexdigest()
-        catalog = DatasetCatalog(name, "image", sources, fingerprints={"class_names_sha256": class_hash})
+        fingerprints = {"class_names_sha256": class_hash}
+        if phd_alphabet is not None:
+            mapped_labels = sorted(sources)
+            fingerprints["p5_catalog_labels_sha256"] = hashlib.sha256("\n".join(mapped_labels).encode("utf-8")).hexdigest()
+            if phd_alphabet_sha256 is not None:
+                fingerprints["alphabet_sha256"] = phd_alphabet_sha256
+        catalog = DatasetCatalog(name, "image", sources, fingerprints=fingerprints)
         catalog.image_protocol = "stable_hash"
         return catalog
 
     if name == "kor_synthetic":
         class_root = root / "retrieve_mtr_per_class" if (root / "retrieve_mtr_per_class").is_dir() else root
-        alphabet_path = root / "kor_101_mfcr.json" if (root / "kor_101_mfcr.json").exists() else class_root.parent / "kor_101_mfcr.json"
-        alphabet = [entry[0] for entry in json.loads(alphabet_path.read_text(encoding="utf-8"))["alphabet"][0]]
+        alphabet, alphabet_sha256 = load_kor_alphabet(root)
         class_dirs = sorted((item for item in class_root.iterdir() if item.is_dir()), key=lambda item: int(item.name))
+        folder_ids = [int(path.name) for path in class_dirs]
+        if len(folder_ids) != len(set(folder_ids)):
+            raise ValueError("KorSynthetic folders must have unique numeric indices")
+        if set(folder_ids) != set(range(len(alphabet))):
+            raise ValueError("KorSynthetic folder indices must cover the alphabet positions exactly")
         sources = {}
         for path in class_dirs:
             class_index = int(path.name)
@@ -319,7 +356,7 @@ def load_catalog(name: str, root: str | Path, *, hangul_only: bool = True) -> Da
             sources[label] = ClassSource(label, "kor_synthetic", folder=path)
         folder_hash = hashlib.sha256("\n".join(path.name for path in class_dirs).encode("utf-8")).hexdigest()
         catalog = DatasetCatalog(name, "kor_synthetic", sources, fingerprints={
-            "alphabet_sha256": _file_sha256(alphabet_path),
+            "alphabet_sha256": alphabet_sha256,
             "class_folder_names_sha256": folder_hash,
         })
         catalog.image_protocol = "stable_hash"

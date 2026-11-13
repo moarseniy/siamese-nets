@@ -442,3 +442,27 @@ def run_training(config, recognizer, optimizer, scheduler,
             dists = torch.zeros(train_dataset.get_alph_size(), device=device)
 
 
+def run_experiment_training(config_path, data_root, output_dir, resume=None, run_test=False, evaluation_data_root=None):
+    """Run a manifest-based protocol through the repository training API."""
+    from pathlib import Path
+    from experiment_train import run as run_manifest_experiment
+
+    return run_manifest_experiment(
+        Path(config_path), Path(data_root), Path(output_dir),
+        Path(resume) if resume is not None else None,
+        bool(run_test),
+        Path(evaluation_data_root) if evaluation_data_root is not None else None,
+    )
+
+
+def evaluate_pretrained_experiment(config_path, data_root, output_path, split="validation", calibrate_with_validation=False):
+    """Evaluate a frozen/pretrained encoder through the repository API."""
+    from pathlib import Path
+    from experiment_evaluate_pretrained import evaluate
+
+    return evaluate(
+        Path(config_path), Path(data_root), Path(output_path),
+        split, bool(calibrate_with_validation),
+    )
+
+

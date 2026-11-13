@@ -22,3 +22,13 @@ def compute_similarity(embed1, embed2):
     # Training losses compare Euclidean distances; negate them so larger scores
     # consistently indicate a more similar pair for ROC/EER computation.
     return (-F.pairwise_distance(embed1, embed2)).detach().cpu().numpy().tolist()
+
+
+# Retrieval, classification, and open-set task metrics are available through
+# the same module as the legacy pair-verification metric.
+from experiment_metrics import (  # noqa: E402
+    classification_metrics,
+    equal_error_rate,
+    open_set_metrics,
+    retrieval_metrics,
+)

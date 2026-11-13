@@ -831,3 +831,15 @@ class KorSyntheticTriplet(Dataset, TripletDataset):
 
     def get_alph(self) -> list:
         return self.alphabet
+
+
+# New benchmark catalogs are exported from the existing dataset module. The
+# legacy Dataset classes above remain available for old saved configs.
+from experiment_data import (  # noqa: E402
+    DatasetCatalog,
+    SampleDataset as ExperimentSampleDataset,
+    SampleRef as ExperimentSampleRef,
+    collate_samples as collate_experiment_samples,
+    load_kor_alphabet as load_experiment_kor_alphabet,
+    load_catalog as load_experiment_catalog,
+)

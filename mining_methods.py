@@ -122,3 +122,13 @@ def save_clusters(out_path, clusters, alphabet=None):
 
     with open(out_path, 'w', encoding='utf8') as json_out:
         json.dump(visible_clusters, json_out, indent=2, ensure_ascii=False)
+
+
+# Shared batch sampler and online class-selection state for the experiment
+# protocols; legacy dataset sampler functions above are kept unchanged.
+from experiment_sampling import (  # noqa: E402
+    APMState,
+    ClassGraph,
+    PKBatchSampler,
+    make_triplets,
+)

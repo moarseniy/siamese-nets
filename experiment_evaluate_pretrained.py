@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 from pathlib import Path
 
 import torch
 
-from experiments.data import SampleDataset, load_catalog
-from experiments.models import build_encoder
-from experiments.train import _load_config, _run_evaluation, set_seed
+from dataset import ExperimentSampleDataset as SampleDataset, load_experiment_catalog as load_catalog
+from model import build_experiment_encoder as build_encoder
+from experiment_train import _load_config, _run_evaluation, set_seed
 
 
 def evaluate(config_path: Path, data_root: Path, output_path: Path, split: str, calibrate_with_validation: bool = False):
@@ -64,19 +63,3 @@ def evaluate(config_path: Path, data_root: Path, output_path: Path, split: str, 
     result = {"config": str(config_path.resolve()), "checkpoint": "pretrained-only", "split": split, "metrics": metrics}
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--data-root", type=Path, required=True)
-    parser.add_argument("--split", choices=("validation", "test"), default="validation")
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--calibrate-with-validation", action="store_true")
-    args = parser.parse_args()
-    evaluate(args.config, args.data_root, args.output, args.split, args.calibrate_with_validation)
-
-
-if __name__ == "__main__":
-    main()
-

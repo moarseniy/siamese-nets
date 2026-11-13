@@ -1,17 +1,15 @@
 """Train the class-balanced metric-learning and classifier experiments.
 
 Examples:
-  python -m experiments.train --config experiments/configs/phd08_metric.json --data-root /home/arseniy/data/PHD08_dataset
-  python -m experiments.train --config experiments/configs/clinc150_metric.json --data-root /home/arseniy/data/clinc150
+  python train.py --config experiments/configs/phd08_metric_dev.json --data-root /home/arseniy/data/PHD08_dataset
+  python train.py --config experiments/configs/clinc150_metric_dev.json --data-root /home/arseniy/data/clinc150
 """
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import math
-import os
 import random
 import time
 from pathlib import Path
@@ -19,13 +17,18 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
-from experiments.data import DatasetCatalog, SampleDataset, SampleRef, collate_samples, load_catalog
-from experiments.losses import CATMLLoss, ProxyAnchorLoss, multi_negative_ranking, multi_similarity, pair_contrastive, supervised_contrastive, triplet_hinge
-from experiments.metrics import classification_metrics, open_set_metrics, retrieval_metrics
-from experiments.models import build_encoder
-from experiments.sampling import APMState, ClassGraph, PKBatchSampler, make_triplets
+from dataset import DatasetCatalog, ExperimentSampleDataset as SampleDataset, ExperimentSampleRef as SampleRef
+from dataset import (
+    collate_experiment_samples as collate_samples,
+    load_experiment_catalog as load_catalog,
+    load_experiment_kor_alphabet as load_kor_alphabet,
+)
+from loss import CATMLLoss, ProxyAnchorLoss, multi_negative_ranking, multi_similarity, pair_contrastive, supervised_contrastive, triplet_hinge
+from metrics import open_set_metrics, retrieval_metrics
+from mining_methods import APMState, ClassGraph, PKBatchSampler, make_triplets
+from model import build_experiment_encoder as build_encoder
 
 
 def set_seed(seed: int) -> None:
@@ -51,6 +54,29 @@ class ReferenceDataset(Dataset):
 
     def __getitem__(self, index):
         return self.base[self.refs[index]]
+
+
+class ReferenceStreamDataset(IterableDataset):
+    """Load class references lazily so large classification tests stay bounded in RAM."""
+
+    def __init__(self, base: SampleDataset, catalog: DatasetCatalog, labels: list[str], split: str, seed: int, protocol: str):
+        self.base = base
+        self.catalog = catalog
+        self.labels = labels
+        self.split = split
+        self.seed = seed
+        self.protocol = protocol
+
+    def __iter__(self):
+        worker = get_worker_info()
+        worker_id = worker.id if worker is not None else 0
+        worker_count = worker.num_workers if worker is not None else 1
+        for class_index, label in enumerate(self.labels):
+            if class_index % worker_count != worker_id:
+                continue
+            source = self.catalog.classes[label]
+            for reference in source.records_for(self.split, self.seed, self.protocol):
+                yield self.base[reference]
 
 
 def _tokenize(tokenizer, texts: list[str], device: torch.device, max_length: int):
@@ -221,30 +247,53 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
     if evaluation_classes is None:
         evaluation_classes = train_classes
     if evaluation["task"] == "classification":
-        refs = list(catalog.references(evaluation_classes, evaluation.get("split", "valid"), int(config["data_split_seed"]), protocol))
-        dataset = ReferenceDataset(sample_dataset, refs)
+        dataset = ReferenceStreamDataset(
+            sample_dataset,
+            catalog,
+            evaluation_classes,
+            evaluation.get("split", "valid"),
+            int(config["data_split_seed"]),
+            protocol,
+        )
+        workers = int(config["hardware"].get("num_workers", 8))
+        eval_generator = torch.Generator(device="cpu").manual_seed(int(config["seed"]) + (0 if section_name == "validation" else 1_000_003))
         loader = DataLoader(
             dataset,
             batch_size=int(config.get("evaluation", {}).get("batch_size", 512)),
-            shuffle=False,
-            num_workers=int(config["hardware"].get("num_workers", 8)),
+            num_workers=workers,
             pin_memory=device.type == "cuda",
-            persistent_workers=int(config["hardware"].get("num_workers", 8)) > 0,
+            persistent_workers=bool(config["hardware"].get("persistent_workers", False)) and workers > 0,
+            prefetch_factor=int(config["hardware"].get("prefetch_factor", 2)) if workers > 0 else None,
             collate_fn=collate_samples,
             worker_init_fn=worker_init_fn,
+            generator=eval_generator,
         )
-        y_true, y_pred = [], []
         train_local_id = {name: index for index, name in enumerate(train_classes)}
+        class_count = len(train_classes)
+        true_count = torch.zeros(class_count, device=device, dtype=torch.long)
+        predicted_count = torch.zeros(class_count, device=device, dtype=torch.long)
+        true_positive_count = torch.zeros(class_count, device=device, dtype=torch.long)
         model.eval()
         with torch.inference_mode():
             for batch in loader:
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda" and config["hardware"].get("precision", "bf16") == "bf16"):
                     embeddings = _forward(model, batch, catalog.modality, tokenizer, device, int(config["model"].get("max_length", 128)))
                     logits = head(embeddings)
-                predicted = logits.argmax(dim=1).cpu().tolist()
-                y_pred.extend(predicted)
-                y_true.extend([train_local_id[name] for name in batch["class_name"]])
-        return classification_metrics(y_true, y_pred)
+                predicted = logits.argmax(dim=1)
+                truth = torch.tensor([train_local_id[name] for name in batch["class_name"]], device=device)
+                true_count += torch.bincount(truth, minlength=class_count)
+                predicted_count += torch.bincount(predicted, minlength=class_count)
+                true_positive_count += torch.bincount(truth[truth == predicted], minlength=class_count)
+        total = true_count.sum()
+        if total.item() == 0:
+            raise ValueError("Classification evaluation produced no samples")
+        denominator = true_count + predicted_count
+        included = denominator > 0
+        per_class_f1 = 2.0 * true_positive_count[included].float() / denominator[included].float()
+        return {
+            "accuracy": float((true_positive_count.sum().float() / total).item()),
+            "macro_f1": float(per_class_f1.mean().item()),
+        }
 
     if evaluation["task"] == "retrieval":
         classes = evaluation_classes
@@ -322,7 +371,7 @@ def _load_config(path: Path) -> dict:
     return config
 
 
-def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | None = None, run_test: bool = False) -> None:
+def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | None = None, run_test: bool = False, evaluation_data_root: Path | None = None) -> None:
     config = _load_config(config_path)
     config["seed"] = int(config.get("seed", 20261113))
     set_seed(config["seed"])
@@ -431,6 +480,72 @@ def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | Non
         image_mean=config["model"].get("image_mean"),
         image_std=config["model"].get("image_std"),
     )
+    test_catalog = catalog
+    test_sample_dataset = evaluation_dataset
+    test_protocol_manifest = protocol_config
+    test_manifest = manifest
+    eval_dataset_config = config.get("evaluation_dataset")
+    if eval_dataset_config is not None:
+        eval_root = evaluation_data_root or eval_dataset_config.get("data_root")
+        if eval_root is None:
+            raise ValueError("This config needs --eval-data-root for its second evaluation dataset")
+        eval_manifest_path = Path(eval_dataset_config["manifest"])
+        if not eval_manifest_path.is_absolute():
+            eval_manifest_path = (config_path.parent / eval_manifest_path).resolve()
+        test_manifest = json.loads(eval_manifest_path.read_text(encoding="utf-8"))
+        phd_alphabet = None
+        phd_alphabet_sha256 = None
+        if eval_dataset_config.get("alphabet_from_training_dataset"):
+            phd_alphabet, phd_alphabet_sha256 = load_kor_alphabet(data_root)
+            expected_train_alphabet_sha = manifest.get("alphabet_sha256")
+            if expected_train_alphabet_sha and phd_alphabet_sha256 != expected_train_alphabet_sha:
+                raise ValueError("Training dataset alphabet differs from its manifest")
+            expected_alignment_sha = test_manifest.get("integrity", {}).get("kor_synthetic_alignment", {}).get("alphabet_sha256")
+            if expected_alignment_sha and phd_alphabet_sha256 != expected_alignment_sha:
+                raise ValueError("PHD08 alignment manifest was prepared with a different KorSynthetic alphabet")
+        test_catalog = load_catalog(
+            eval_dataset_config["dataset"], eval_root,
+            hangul_only=bool(eval_dataset_config.get("dataset_options", {}).get("hangul_only", True)),
+            phd_alphabet=phd_alphabet,
+            phd_alphabet_sha256=phd_alphabet_sha256,
+        )
+        expected_eval_hash = test_manifest.get("p5_catalog_labels_sha256") if phd_alphabet is not None else test_manifest.get("catalog_labels_sha256")
+        if isinstance(expected_eval_hash, dict):
+            expected_eval_hash = expected_eval_hash["hangul_only" if eval_dataset_config.get("dataset_options", {}).get("hangul_only", True) else "all_symbols"]
+        actual_eval_hash = hashlib.sha256("\n".join(test_catalog.labels).encode("utf-8")).hexdigest()
+        if expected_eval_hash and expected_eval_hash != actual_eval_hash:
+            raise ValueError("Evaluation dataset class inventory differs from its mapping manifest")
+        for key, expected in test_manifest.get("metadata_sha256", {}).items():
+            if test_catalog.fingerprints.get(key) != expected:
+                raise ValueError(f"Evaluation dataset metadata fingerprint mismatch for {key}")
+        for key in ("class_names_sha256", "alphabet_sha256", "class_folder_names_sha256"):
+            expected = test_manifest.get(key)
+            if expected and test_catalog.fingerprints.get(key) != expected:
+                raise ValueError(f"Evaluation dataset fingerprint mismatch for {key}")
+        test_protocol_manifest = test_manifest["protocols"][eval_dataset_config["protocol"]]
+        test_label_ids = {name: index for index, name in enumerate(test_catalog.labels)}
+        test_model_config = eval_dataset_config.get("preprocessing", config["model"])
+        test_sample_dataset = SampleDataset(
+            test_catalog,
+            test_label_ids,
+            image_size=int(test_model_config.get("image_size", 224)),
+            train=False,
+            image_channels=int(test_model_config.get("image_channels", 3)),
+            image_mean=test_model_config.get("image_mean"),
+            image_std=test_model_config.get("image_std"),
+        )
+    if config.get("test", {}).get("task") == "classification":
+        test_cfg = config["test"]
+        test_classes = test_cfg.get("classes")
+        if test_classes is None and test_cfg.get("class_key"):
+            test_classes = test_protocol_manifest.get(test_cfg["class_key"])
+        test_classes = train_classes if test_classes is None else test_classes
+        missing_test_classes = sorted(set(test_classes) - set(test_catalog.labels))
+        untrained_test_classes = sorted(set(test_classes) - set(train_classes))
+        if missing_test_classes:
+            raise ValueError(f"Test protocol references classes absent from evaluation data: {missing_test_classes[:5]}")
+        if untrained_test_classes:
+            raise ValueError(f"Classification test includes classes absent from the training head: {untrained_test_classes[:5]}")
     workers = int(config["hardware"].get("num_workers", 8))
     worker_generator = torch.Generator(device="cpu")
     loader = DataLoader(
@@ -458,7 +573,7 @@ def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | Non
     if objective is not None:
         optimizer_parameters.extend(objective.parameters())
     if not any(parameter.requires_grad for parameter in optimizer_parameters):
-        raise ValueError("This config has no trainable parameters; use experiments.evaluate_pretrained for a frozen encoder")
+        raise ValueError("This config has no trainable parameters; use train.py --evaluate-pretrained for a frozen encoder")
     train_cfg = config["training"]
     try:
         optimizer = torch.optim.AdamW(
@@ -484,6 +599,9 @@ def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | Non
     resolved_config = dict(config)
     resolved_config["data_root"] = str(data_root.resolve())
     resolved_config["manifest"] = str(manifest_path.resolve())
+    if eval_dataset_config is not None:
+        resolved_config["evaluation_dataset"]["data_root"] = str(Path(eval_root).resolve())
+        resolved_config["evaluation_dataset"]["manifest"] = str(eval_manifest_path.resolve())
     resolved_config["runtime"] = {
         "torch": torch.__version__,
         "torchvision": __import__("torchvision").__version__,
@@ -495,6 +613,8 @@ def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | Non
     }
     (output_dir / "resolved_config.json").write_text(json.dumps(resolved_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if eval_dataset_config is not None:
+        (output_dir / "evaluation_manifest.json").write_text(json.dumps(test_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output_dir / "label_map.json").write_text(json.dumps(all_label_ids, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     best_score = -math.inf
     if resume is not None:
@@ -664,22 +784,8 @@ def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | Non
             objective.load_state_dict(best_state["objective"])
         if best_state.get("validation", {}).get("confidence_threshold") is not None and config.get("validation") is not None:
             config["validation"]["calibrated_threshold"] = best_state["validation"]["confidence_threshold"]
-        test_metrics = _run_evaluation(config, "test", catalog, model, classifier, evaluation_dataset, tokenizer, device, train_classes, protocol_config, output_dir)
+        test_metrics = _run_evaluation(config, "test", test_catalog, model, classifier, test_sample_dataset, tokenizer, device, train_classes, test_protocol_manifest, output_dir)
         (output_dir / "test_metrics.json").write_text(json.dumps(test_metrics, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"test": test_metrics}, ensure_ascii=False))
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a deterministic metric-learning experiment")
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--data-root", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--resume", type=Path)
-    parser.add_argument("--run-test", action="store_true", help="Evaluate the configured test split once after training")
-    args = parser.parse_args()
-    run(args.config, args.data_root, args.output, args.resume, args.run_test)
-
-
-if __name__ == "__main__":
-    main()
 

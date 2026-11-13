@@ -15,9 +15,10 @@ configs.
 
 ## Planned research experiments
 
-For the CLINC150, CUB-200-2011, Omniglot, and PHD08 plans, use the new
-experiment runner rather than the legacy image-only entry point. It provides
-deterministic class manifests, P×K batches, CATML/APM/Auto-clustering,
+For the CLINC150, CUB-200-2011, Omniglot, PHD08, and KorSynthetic plans, the
+existing `train.py` entry point also accepts manifest-based experiment
+configs. The new mode provides deterministic class manifests, P×K batches,
+CATML/APM/Auto-clustering,
 classification and retrieval metrics, and BF16 training options. The plan
 files remain the scientific protocol; the runner records its resolved config
 and manifest in each run folder.

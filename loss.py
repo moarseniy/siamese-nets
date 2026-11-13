@@ -66,3 +66,16 @@ class MetricLoss(nn.Module):
 
         loss_metric = (g1 * g1) + (g2 * g2) + (g3 * g3)
         return loss_metric.mean()
+
+
+# Experiment-mode objectives are exposed through the repository's existing
+# loss module so legacy and planned runs share one public loss API.
+from experiment_losses import (  # noqa: E402
+    CATMLLoss,
+    ProxyAnchorLoss,
+    multi_negative_ranking,
+    multi_similarity,
+    pair_contrastive,
+    supervised_contrastive,
+    triplet_hinge,
+)

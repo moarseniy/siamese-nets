@@ -254,11 +254,13 @@ def _phd_root(root: Path) -> Path:
     return candidate
 
 
-def _phd_manifest(root: Path, seed: int, deep_scan: bool = False) -> dict:
+def _phd_manifest(root: Path, seed: int, deep_scan: bool = False, kor_root: Path | None = None) -> dict:
     data_root = _phd_root(root)
     labels = sorted((path.name for path in data_root.iterdir() if path.is_dir()), key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
     if len(labels) != 2350:
         raise ValueError(f"Expected 2350 PHD08 class folders, found {len(labels)}")
+    if any(not label.isdigit() for label in labels) or len({int(label) for label in labels}) != len(labels):
+        raise ValueError("PHD08 class folders must have unique numeric names used as alphabet indices")
     train_classes, valid_classes, test_classes = _stable_split(labels, (1504, 376, 470), seed)
     integrity = {"full_image_scan_performed": False, "source_family_metadata": "unknown"}
     counts = {"classes": len(labels), "expected_images_per_class": 2187, "expected_total_images": 5139450}
@@ -273,6 +275,36 @@ def _phd_manifest(root: Path, seed: int, deep_scan: bool = False) -> dict:
         integrity["full_image_scan_performed"] = True
         integrity["images_per_class_distribution"] = distribution
         counts["observed_total_images"] = observed_total
+    p5_protocol = None
+    p5_symbols = None
+    alignment_alphabet_sha256 = None
+    if kor_root is not None:
+        kor_root = kor_root.expanduser().resolve()
+        kor_classes = kor_root / "retrieve_mtr_per_class" if (kor_root / "retrieve_mtr_per_class").is_dir() else kor_root
+        alphabet_path = kor_root / "kor_101_mfcr.json" if (kor_root / "kor_101_mfcr.json").exists() else kor_classes.parent / "kor_101_mfcr.json"
+        alphabet = [entry[0] for entry in json.loads(alphabet_path.read_text(encoding="utf-8"))["alphabet"][0]]
+        kor_folder_ids = {int(path.name) for path in kor_classes.iterdir() if path.is_dir() and path.name.isdigit()}
+        p5_symbols = []
+        for label in labels:
+            if not label.isdigit() or int(label) >= len(alphabet):
+                raise ValueError(f"PHD08 class folder {label!r} is not a valid KorSynthetic alphabet index")
+            symbol = alphabet[int(label)]
+            if not 0xAC00 <= ord(symbol) <= 0xD7A3:
+                raise ValueError(f"PHD08 class folder {label} maps to non-Hangul symbol {symbol!r}")
+            if int(label) not in kor_folder_ids:
+                raise ValueError(f"PHD08 class folder {label} has no matching KorSynthetic folder")
+            p5_symbols.append(symbol)
+        p5_symbols = sorted(set(p5_symbols))
+        if len(p5_symbols) != len(labels):
+            raise ValueError("PHD08 indices do not map one-to-one to Hangul symbols")
+        alignment_alphabet_sha256 = _sha256(alphabet_path)
+        p5_protocol = {"classes": p5_symbols, "label_space": "PHD08 2350-class subset mapped through alphabet[index]"}
+        integrity["kor_synthetic_alignment"] = {
+            "method": "folder index -> kor_101_mfcr alphabet at the same position",
+            "p5_class_count": len(p5_symbols),
+            "alphabet_sha256": alignment_alphabet_sha256,
+            "all_indices_present_in_kor_synthetic": True,
+        }
     return {
         "schema_version": SCHEMA_VERSION,
         "dataset": "phd08",
@@ -280,6 +312,7 @@ def _phd_manifest(root: Path, seed: int, deep_scan: bool = False) -> dict:
         "counts": counts,
         "catalog_labels_sha256": _labels_sha256(labels),
         "class_names_sha256": hashlib.sha256("\n".join(labels).encode("utf-8")).hexdigest(),
+        "p5_catalog_labels_sha256": _labels_sha256(p5_symbols) if p5_symbols is not None else None,
         "protocols": {
             "closed_set": {"classes": labels, "sample_split": "stable_hash(uid, seed) into 60/20/20; not source-disjoint"},
             "class_disjoint_retrieval": {
@@ -290,12 +323,13 @@ def _phd_manifest(root: Path, seed: int, deep_scan: bool = False) -> dict:
                 "source_disjoint": False,
                 "note": "Source/family metadata must be supplied separately before claiming source-disjoint evaluation.",
             },
+            **({"p5_synthetic_transfer": p5_protocol} if p5_protocol is not None else {}),
         },
         "integrity": integrity,
     }
 
 
-def _kor_manifest(root: Path, seed: int) -> dict:
+def _kor_manifest(root: Path, seed: int, phd_root: Path | None = None) -> dict:
     base = root / "retrieve_mtr_per_class" if (root / "retrieve_mtr_per_class").is_dir() else root
     alphabet_path = root / "kor_101_mfcr.json" if (root / "kor_101_mfcr.json").exists() else base.parent / "kor_101_mfcr.json"
     if not alphabet_path.exists():
@@ -304,10 +338,37 @@ def _kor_manifest(root: Path, seed: int) -> dict:
     class_dirs = sorted((path.name for path in base.iterdir() if path.is_dir()), key=lambda name: (not name.isdigit(), int(name) if name.isdigit() else name))
     if len(class_dirs) != len(alphabet):
         raise ValueError(f"Folder/alphabet count mismatch: {len(class_dirs)} folders, {len(alphabet)} symbols")
+    if any(not name.isdigit() for name in class_dirs) or len({int(name) for name in class_dirs}) != len(class_dirs):
+        raise ValueError("KorSynthetic class folders must have unique numeric names used as alphabet indices")
+    kor_folder_ids = {int(name) for name in class_dirs}
+    if kor_folder_ids != set(range(len(alphabet))):
+        raise ValueError("KorSynthetic folder indices must cover the alphabet positions exactly")
     hangul_ids = [index for index, symbol in enumerate(alphabet) if 0xAC00 <= ord(symbol) <= 0xD7A3]
     hangul_id_set = set(hangul_ids)
     other_ids = [index for index in range(len(alphabet)) if index not in hangul_id_set]
     hangul = [alphabet[index] for index in hangul_ids]
+    protocols = {
+        "hangul_only": {"classes": hangul, "excluded_folder_ids": [class_dirs[index] for index in other_ids]},
+        "all_symbols": {"classes": alphabet},
+    }
+    phd_symbols = None
+    if phd_root is not None:
+        phd_data_root = _phd_root(phd_root.expanduser().resolve())
+        phd_ids = sorted((path.name for path in phd_data_root.iterdir() if path.is_dir()), key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
+        phd_symbols = []
+        for label in phd_ids:
+            if not label.isdigit() or int(label) >= len(alphabet):
+                raise ValueError(f"PHD08 class folder {label!r} is not an index in the KorSynthetic alphabet")
+            symbol = alphabet[int(label)]
+            if not 0xAC00 <= ord(symbol) <= 0xD7A3:
+                raise ValueError(f"PHD08 class folder {label} maps to non-Hangul symbol {symbol!r}")
+            if int(label) not in kor_folder_ids:
+                raise ValueError(f"PHD08 class folder {label} has no KorSynthetic folder")
+            phd_symbols.append(symbol)
+        if len(phd_symbols) != len(set(phd_symbols)):
+            raise ValueError("PHD08 indices do not map one-to-one to Hangul symbols")
+        phd_symbols = sorted(phd_symbols)
+        protocols["phd08_2350"] = {"classes": phd_symbols, "label_space": "PHD08 folder index mapped through alphabet[index]"}
     return {
         "schema_version": SCHEMA_VERSION,
         "dataset": "kor_synthetic",
@@ -315,15 +376,11 @@ def _kor_manifest(root: Path, seed: int) -> dict:
         "counts": {"all_symbols": len(alphabet), "hangul_syllables": len(hangul), "non_hangul_symbols": len(other_ids)},
         "alphabet_sha256": _sha256(alphabet_path),
         "class_folder_names_sha256": hashlib.sha256("\n".join(class_dirs).encode("utf-8")).hexdigest(),
-        "class_folder_to_symbol": {class_dirs[index]: alphabet[index] for index in range(len(class_dirs))},
         "catalog_labels_sha256": {
             "hangul_only": _labels_sha256(hangul),
             "all_symbols": _labels_sha256(alphabet),
         },
-        "protocols": {
-            "hangul_only": {"classes": hangul, "excluded_folder_ids": [class_dirs[index] for index in other_ids]},
-            "all_symbols": {"classes": alphabet},
-        },
+        "protocols": protocols,
         "non_hangul_symbols": [alphabet[index] for index in other_ids],
     }
 
@@ -344,9 +401,19 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--deep-scan", action="store_true", help="Count PHD08 image files in all 2350 class folders")
+    parser.add_argument("--kor-root", type=Path, help="KorSynthetic root used to verify PHD08 index-to-symbol alignment")
+    parser.add_argument("--phd-root", type=Path, help="PHD08 root used to add the 2350-class transfer protocol to KorSynthetic")
     args = parser.parse_args()
     if args.dataset == "phd08":
-        manifest = _phd_manifest(args.root, args.seed, deep_scan=args.deep_scan)
+        kor_root = args.kor_root
+        if kor_root is None and (args.root.resolve().parent / "kor_synthetic").is_dir():
+            kor_root = args.root.resolve().parent / "kor_synthetic"
+        manifest = _phd_manifest(args.root, args.seed, deep_scan=args.deep_scan, kor_root=kor_root)
+    elif args.dataset == "kor_synthetic":
+        phd_root = args.phd_root
+        if phd_root is None and (args.root.resolve().parent / "PHD08_dataset").is_dir():
+            phd_root = args.root.resolve().parent / "PHD08_dataset"
+        manifest = _kor_manifest(args.root, args.seed, phd_root=phd_root)
     else:
         manifest = BUILDERS[args.dataset](args.root, args.seed)
     _write_manifest(args.output, manifest)
