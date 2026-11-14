@@ -1,44 +1,91 @@
 # siamese-nets
 
-PyTorch training code for image embeddings with triplet and contrastive objectives.
-The training entry point reads a JSON config:
+Код на PyTorch для обучения векторных представлений изображений с помощью
+триплетной и контрастивной функций потерь. Старая точка входа читает JSON-конфиг:
 
 ```bash
 python train.py -c configs/kor_0.json
 ```
 
-Training currently requires a CUDA device. Checkpoints, plots, and a copy of the
-resolved `common` config are written under `checkpoint_pt`.
-Older top-level configs in `configs/` are translated to the current schema by
-`train.py`; new experiments should use the `common` schema shown in the current
-configs.
+Для обучения нужна видеокарта NVIDIA с CUDA. Контрольные точки модели, графики и
+копия нормализованного конфига `common` сохраняются в `checkpoint_pt`.
+Старые конфиги из `configs/` преобразуются внутри `train.py`; новые эксперименты
+следует запускать через единый сценарий ниже.
 
-## Planned research experiments
+## Исследовательские эксперименты
 
-For the CLINC150, CUB-200-2011, Omniglot, PHD08, and KorSynthetic plans, the
-existing `train.py` entry point also accepts manifest-based experiment
-configs. The new mode provides deterministic class manifests, P×K batches,
-CATML/APM/Auto-clustering,
-classification and retrieval metrics, and BF16 training options. The plan
-files remain the scientific protocol; the runner records its resolved config
-and manifest in each run folder.
+Для CLINC150, CUB-200-2011, Omniglot, PHD08 и KorSynthetic используй одну точку
+входа:
 
-Use `python scripts/launch_experiment.py --config <name> --models-dir <path>`
-as the single entry point for experiment runs and matrices. Start with
-[experiments/RUNBOOK.md](experiments/RUNBOOK.md) for examples, Blackwell setup,
-and data manifests. Starter configs are in
-`experiments/configs/`; generated split manifests are in
-`experiments/manifests/`.
+```bash
+python scripts/launch_experiment.py --config <имя-конфига> --models-dir <папка-с-моделями>
+```
 
-## Loss and sampler settings
+Сценарий запуска сам выбирает корень данных и папку результатов. Для нескольких
+начальных значений генератора случайных чисел, функций потерь или способов
+выбора примеров он создаёт и запускает матрицу
+заданий в том же вызове. Примеры и карта конфигов приведены в
+[руководстве по запуску](experiments/RUNBOOK.md). Конфиги находятся в
+`experiments/configs/`, разбиения данных — в `experiments/manifests/`.
 
-Set `common.loss_settings.type` to `triplet` or `contrastive`. Contrastive mode
-selects a pair dataset automatically and expects a binary pair label: `0` for
-same class and `1` for different classes. `gen_imp_ratio` is the probability
-of generating a positive pair. For triplet mode, each item contains anchor,
-positive, and negative images.
+Планы исследований: [CLINC150](EXPERIMENT_PLAN_CLINC150.md),
+[CUB-200-2011](EXPERIMENT_PLAN_CUB.md), [Omniglot](EXPERIMENT_PLAN_OMNIGLOT.md)
+и [PHD08](EXPERIMENT_PLAN_PHD08.md).
 
-The sampler is configured independently for `train` and `test` under
+### Термины в исследовательских планах
+
+- **Закрытый набор классов (`closed-set`)**: при оценке встречаются только
+  классы, известные модели во время обучения.
+- **Открытый набор (`open-set`)**: могут поступить объекты неизвестных классов;
+  система должна распознать известные классы и отказать для неизвестных.
+- **Поиск похожих объектов (`retrieval`)**: для запроса ищутся ближайшие
+  векторные представления в галерее. Это не то же самое, что классификация.
+- **Метрическое обучение (`metric learning`)**: модель учится строить векторы,
+  в которых расстояние отражает сходство объектов или совпадение их классов.
+- **Разделение по классам (`class-disjoint`)**: классы обучающей и оцениваемой
+  частей не пересекаются.
+- **Разделение по источникам или шрифтам (`source-disjoint`, `font-disjoint`)**:
+  изображения одной исходной коллекции или одного шрифта не попадают сразу в
+  обучение и итоговую оценку.
+- **Без примеров целевого класса при обучении (`zero-shot`)**: модель не
+  получала размеченных обучающих примеров этого класса. При поиске изображения
+  класса могут находиться в галерее для сравнения.
+- **Оценка по малому числу примеров (`few-shot`)**: после обучения для нового
+  класса предоставляются размеченные опорные примеры. В режиме `one-shot` такой
+  пример один.
+- Проверочная часть (`validation`) используется для выбора настроек и модели.
+  Итоговая часть (`test`) используется после фиксации настроек.
+- **Seed** — начальное значение генераторов случайных чисел, помогающее
+  повторить запуск.
+- **Базовая сеть (`backbone`)** — основная архитектура, извлекающая признаки;
+  поверх неё может добавляться небольшой проекционный слой.
+- **Эмбеддинг (`embedding`)** — векторное представление объекта, по которому
+  измеряют сходство и выбирают ближайшие примеры.
+- **Пакет (`batch`)** — группа примеров, обрабатываемая за один шаг обучения.
+- **Подбор сложных примеров (`mining`)** — выбор положительных и отрицательных
+  примеров, на которых модель должна учиться лучше различать классы.
+- **Сдвиг домена (`domain shift`)** — различие между обучающими и оцениваемыми
+  изображениями, например из-за разных источников или шрифтов.
+- **Галерея** — набор эталонных объектов для поиска; **запрос** — объект, для
+  которого ищется ближайший эталон; **опорный пример (`support`)** — размеченный
+  пример, разрешённый для ответа в few-shot задаче.
+- **`Recall@K`** — доля запросов, у которых правильный класс есть среди K
+  ближайших результатов. **EER** — порог, при котором частоты ложного принятия и
+  ложного отклонения равны; **AUROC** — площадь под ROC-кривой.
+- **`macro-F1`** — сначала F1 считается отдельно для каждого класса, затем
+  значения усредняются поровну. **MAP@R** усредняет точность ранжирования по
+  числу релевантных объектов каждого запроса.
+
+## Настройка старого способа выборки
+
+В старых конфигах тип функции потерь задаётся в `common.loss_settings.type`:
+`triplet` или `contrastive`. Для контрастивного обучения автоматически
+выбирается датасет пар. Метка пары бинарная: `0` означает один класс, `1` — разные
+классы. Параметр `gen_imp_ratio` задаёт вероятность сформировать положительную
+пару. В триплетном режиме каждый элемент содержит якорное, положительное и
+отрицательное изображения.
+
+Настройки выборки задаются отдельно для `train` и `test` в
 `common.batch_settings`:
 
 ```json
@@ -59,29 +106,30 @@ The sampler is configured independently for `train` and `test` under
 }
 ```
 
-Supported negative modes:
+Поддерживаются следующие режимы выбора отрицательного примера:
 
-- `random`: choose a negative class uniformly, then choose an image from it.
-- `hard` (also `batch_hard`): from the negative examples sampled in the current
-  batch, use the closest valid negative embedding for each anchor. In pair mode,
-  replace each negative pair's second image with the closest cross-class
-  candidate in the batch.
-- `semi_hard`: for triplets, choose a negative with
-  `d(anchor, positive) < d(anchor, negative) < d(anchor, positive) + margin`,
-  falling back to the closest valid negative if none is available. For
-  contrastive pairs, choose the closest negative inside the contrastive margin,
-  falling back to the closest valid candidate.
-- `auto_clusters`: periodically find nearby class centroids and sample
-  negatives from the anchor class's cluster with probability `inner_imp_prob`;
-  otherwise use random negatives. This is class-level mining, not per-image
-  hard mining. It requires `save_ideals: true`.
+- `random`: равномерно выбрать другой класс, затем изображение из этого класса.
+- `hard` (также `batch_hard`): выбрать ближайшее подходящее отрицательное
+  векторное представление среди отрицательных примеров текущего пакета. Для пар
+  заменяется второе изображение отрицательной пары на ближайший пример другого
+  класса из этого пакета.
+- `semi_hard`: для триплета выбрать отрицательный пример, расстояние до которого
+  больше расстояния до положительного, но меньше этого расстояния плюс `margin`:
+  `d(anchor, positive) < d(anchor, negative) < d(anchor, positive) + margin`.
+  Если подходящего примера нет, берётся ближайший допустимый отрицательный. Для
+  контрастивной пары выбирается ближайший отрицательный пример внутри заданной
+  границы; если его нет — ближайший доступный.
+- `auto_clusters`: периодически находить близкие центры классов и с вероятностью
+  `inner_imp_prob` выбирать отрицательный пример из группы якорного класса; иначе
+  используется случайный выбор. Это выбор на уровне классов, а не отдельных
+  изображений. Требуется `save_ideals: true`.
 
-Cluster settings may be nested under `auto_clusters` as shown above or provided
-as legacy flat fields. Pair sampling and triplet sampling both support random
-and cluster-based negatives. The `hard` modes select from candidates in the
-current batch, so their candidate pool grows with the training batch size.
+Настройки кластеризации можно вложить в `auto_clusters`, как в примере выше, или
+задать старыми плоскими полями конфига. Случайная и кластерная выборки поддерживают
+и пары, и триплеты. Режимы `hard` выбирают из примеров текущего пакета, поэтому с
+ростом пакета увеличивается пул кандидатов.
 
-For a contrastive experiment, use for example:
+Пример настройки контрастивного обучения:
 
 ```json
 "loss_settings": { "type": "contrastive", "alpha_margin": 1.0 },
@@ -103,19 +151,23 @@ For a contrastive experiment, use for example:
 }
 ```
 
-## Dataset layout
+## Структура данных старых датасетов
 
-`KorSynthetic` expects one directory per class containing the repository's
-synthetic JSON image records. `Omniglot` expects the usual alphabet/character
-directory hierarchy. `Common` expects a two-level hierarchy, where each class
-directory contains its images. The class folders must contain at least two
-images to be eligible for positive-pair sampling.
+`KorSynthetic` ожидает отдельную папку для каждого класса с синтетическими
+изображениями в JSON-формате, используемом проектом. `Omniglot` использует
+иерархию папок «алфавит/символ». `Common` ожидает два уровня папок: в папке
+класса должны лежать изображения. Для формирования положительной пары в папке
+класса должно быть не меньше двух изображений.
 
-## Metrics and reproducibility
+## Метрики и воспроизводимость
 
-Triplet evaluation treats anchor-positive as the positive pair and both
-anchor-negative and positive-negative as negative pairs. EER uses negative
-Euclidean distance as the pair score and same-class as the positive label. Set `common.seed` to seed Python,
-NumPy, and PyTorch random generators. Checkpoints store model, optimizer,
-scheduler, and epoch state; set `common.file_to_start` to a saved `model.pt` to
-resume training.
+При оценке триплетов пара «якорь–положительный пример» считается положительной,
+а пары «якорь–отрицательный пример» и «положительный–отрицательный пример» —
+отрицательными. Для EER (равной частоты ошибок) оценка пары — отрицательное
+евклидово расстояние, а положительная метка означает принадлежность к одному
+классу.
+
+Параметр `common.seed` задаёт начальные состояния генераторов случайных чисел
+Python, NumPy и PyTorch. Контрольные точки сохраняют состояние модели,
+оптимизатора, планировщика скорости обучения и эпохи. Для продолжения обучения
+укажи сохранённый `model.pt` в `common.file_to_start`.

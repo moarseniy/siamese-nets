@@ -1,20 +1,21 @@
-# Experiment runner
+# Эксперименты
 
-This package contains the manifests and experiment configs for CLINC150,
-CUB-200-2011, Omniglot, PHD08, and KorSynthetic. Launch all of them through the
-same command, `scripts/launch_experiment.py`; it calls the existing `train.py`
-internally and uses the integrated training APIs. The experiment implementation
-lives in root-level modules exposed through the existing `dataset.py`, `loss.py`,
-`model.py`, `mining_methods.py`, `metrics.py`, and `train_utils.py` APIs.
+Здесь хранятся конфиги и манифесты разбиений CLINC150, CUB-200-2011, Omniglot,
+PHD08 и KorSynthetic. Запускать их нужно одним способом — через
+`scripts/launch_experiment.py`. Сценарий вызывает `train.py`, автоматически
+подставляет корень данных и при необходимости собирает матрицу запусков. Код
+экспериментального режима находится в модулях верхнего уровня и подключён к
+существующим интерфейсам `dataset.py`, `loss.py`, `model.py`,
+`mining_methods.py`, `metrics.py` и `train_utils.py`.
 
-For the launch order, config-to-plan map, matrix generation, and exact commands,
-see the [Russian runbook](RUNBOOK.md).
+Порядок запусков, соответствие конфигов исследовательским планам и готовые
+команды приведены в [руководстве по запуску](RUNBOOK.md).
 
-## Blackwell environment
+## Окружение для Blackwell
 
-The supported starter environment is Python 3.11, PyTorch 2.15.0,
-TorchVision 0.29.2, and the stable CUDA 13.2 wheels. Install the matched
-framework wheels first, then the experiment dependencies:
+Начальная конфигурация окружения: Python 3.11, PyTorch 2.15.0, TorchVision
+0.29.2 и стабильные пакеты CUDA 13.2. Сначала установи совместимые пакеты PyTorch
+и TorchVision, затем остальные зависимости:
 
 ```bash
 python3.11 -m venv .venv-blackwell
@@ -25,47 +26,50 @@ python -m pip install torch==2.15.0 torchvision==0.29.2 \
 python -m pip install -r requirements-experiments.txt
 ```
 
-The host driver must support CUDA 13.2; NVIDIA lists 595.45.04 as the Linux
-GA driver floor. The PyTorch CUDA wheel includes the user-space runtime, so a
-separate toolkit install is only needed if you later build custom CUDA
-extensions. [PyTorch 2.15 lists CUDA 13.2 as its stable wheel](https://github.com/pytorch/pytorch/blob/main/RELEASE.md),
-[TorchVision 0.29.2 supports PyTorch 2.14 and later](https://github.com/pytorch/vision/releases),
-and [NVIDIA's CUDA 13.2 release notes list the driver requirement](https://docs.nvidia.com/cuda/archive/13.2.0/cuda-toolkit-release-notes/).
+Драйвер NVIDIA на машине должен поддерживать CUDA 13.2; минимальная версия
+драйвера для Linux, указанная NVIDIA, — 595.45.04. CUDA runtime входит в пакет
+PyTorch, поэтому отдельно устанавливать CUDA Toolkit нужно только для сборки
+собственных расширений CUDA. См. [описание стабильных пакетов CUDA 13.2 для
+PyTorch 2.15](https://github.com/pytorch/pytorch/blob/main/RELEASE.md),
+[совместимость TorchVision 0.29.2](https://github.com/pytorch/vision/releases) и
+[требования NVIDIA к драйверу CUDA 13.2](https://docs.nvidia.com/cuda/archive/13.2.0/cuda-toolkit-release-notes/).
 
-Check the cluster environment before a long sweep:
+Перед долгим запуском проверь вычислительную машину:
 
 ```bash
 nvidia-smi
 python -c 'import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.version.cuda); print(torch.cuda.get_device_name(0), torch.cuda.get_device_properties(0).total_memory // 2**30, torch.cuda.is_bf16_supported())'
 ```
 
-The configs use BF16, pinned memory, deterministic worker seeding per epoch,
-and channels-last image tensors. Persistent workers are an opt-in because
-they retain augmentation RNG state across epochs/resumes. P×K batch defaults
-are starting values, not claims that they saturate a 204 GB card. Increase `classes_per_batch`,
-`samples_per_class`, and evaluation batch size only after measuring throughput
-and confirming the same batch protocol across compared runs. `torch.compile`
-is intentionally left out of the baseline to keep compile time and graph
-specialization from changing the initial runtime comparison.
+Конфиги используют BF16, закреплённую память, воспроизводимую инициализацию
+рабочих процессов по эпохам и формат каналов channels-last для изображений.
+Постоянные рабочие процессы выключены по умолчанию, поскольку сохраняют состояние
+генератора случайных чисел между эпохами и при продолжении запуска. Начальные
+размеры пакетов P×K не гарантируют максимальную загрузку видеокарты с 204 ГБ
+памяти. Увеличивай `classes_per_batch`, `samples_per_class` и размер пакета
+оценки только после измерения скорости и проверки, что сравниваемые методы
+используют одинаковые настройки. `torch.compile` пока не включён: время компиляции
+и специализация графа не должны менять исходное сравнение времени работы.
 
-Pass `--models-dir /path/to/models` to the launcher. It resolves Hugging Face
-repositories by model ID (`FacebookAI/roberta-base`,
-`sentence-transformers/all-MiniLM-L6-v2`) and TorchVision checkpoints under
-`/path/to/models/torchvision/checkpoints/`. With this flag it requires local
-files and does not fall back to downloading them. See [the runbook](RUNBOOK.md)
-for the expected layout and commands.
+Для запуска с готовыми весами передавай launcher-у `--models-dir /путь/к/моделям`.
+Репозитории Hugging Face ищутся по их идентификаторам, например
+`FacebookAI/roberta-base` и `sentence-transformers/all-MiniLM-L6-v2`. Веса
+TorchVision ищутся в подпапке `torchvision/checkpoints/`. Если этот параметр
+передан, используются только локальные файлы; автоматической загрузки из сети
+не будет. Ожидаемая структура каталогов показана в [руководстве](RUNBOOK.md).
 
-Retrieval keeps the gallery embeddings on the GPU and computes query scores in
-chunks. This fits the planned PHD08 class-disjoint gallery comfortably at the
-configured embedding sizes; if another dataset or backbone exceeds available
-memory, reduce evaluation batch size first or add a CPU/memmap gallery backend
-as a separately recorded evaluation mode.
+При поиске галерея векторов хранится на GPU, а оценки запросов вычисляются
+частями. При заданных размерах векторов это подходит для галереи PHD08 в
+протоколе поиска на новых классах. Если другой набор данных или модель не
+помещаются в память, сначала уменьши размер пакета оценки; перенос вычислений на
+CPU или хранение в отображаемом в память файле (`memmap`) нужно отдельно
+зафиксировать как режим оценки.
 
-## Data manifests
+## Манифесты данных
 
-Manifests generated from the datasets currently present under
-`/home/arseniy/data` are stored in `experiments/manifests/`. Regenerate one
-after changing the dataset or split seed:
+Манифесты для наборов данных из `/home/arseniy/data` сохранены в
+`experiments/manifests/`. Пересоздавай манифест после изменения данных или
+начального значения генератора `seed`:
 
 ```bash
 python scripts/prepare_manifests.py --dataset cub200 --root /home/arseniy/data/CUB-200-2011 --output experiments/manifests/cub200.json --seed 20261113
@@ -75,158 +79,149 @@ python scripts/prepare_manifests.py --dataset clinc150 --root /home/arseniy/data
 python scripts/prepare_manifests.py --dataset kor_synthetic --root /home/arseniy/data/kor_synthetic --phd-root /home/arseniy/data/PHD08_dataset --output experiments/manifests/kor_synthetic.json --seed 20261113
 ```
 
-The CUB manifest follows `images.txt` and reports the eight extra JPGs that
-are present outside that metadata. CLINC text duplicates are kept in the
-official splits; the manifest records that policy. The KorSynthetic Hangul
-protocol includes 11,172 syllables and excludes the 18 non-Hangul symbols in
-the supplied alphabet. PHD08 class-disjoint splits are reproducible by class,
-but the manifest explicitly does **not** claim source/family-disjointness;
-that metadata is not present in the local tree.
+Манифест CUB следует `images.txt` и указывает восемь дополнительных JPG-файлов,
+которых нет в метаданных. Повторяющиеся тексты CLINC сохраняются в официальных
+разбиениях; эта политика зафиксирована в манифесте. Протокол KorSynthetic для
+корейских слогов содержит 11 172 символа и исключает 18 не-хангыльских символов
+из предоставленного алфавита. Разбиение классов PHD08 воспроизводимо, но в
+манифесте не заявляется разделение по источнику или семейству шрифта: таких
+метаданных в локальной папке нет.
 
-The default PHD08 manifest records the expected 2,187 images/class but does
-not walk all 5.1M files. Add `--deep-scan` to its preparation command if a full
-per-class image-count audit is needed; run that I/O-heavy scan once.
+Манифест PHD08 по умолчанию хранит ожидаемое число — 2 187 изображений на класс,
+но не пересчитывает все 5,1 млн файлов. Для полной проверки количества файлов
+добавь `--deep-scan`; этот медленный проход по диску достаточно выполнить один
+раз.
 
-PHD08 and KorSynthetic use the same direct label rule: folder `N` corresponds
-to `kor_101_mfcr.json` alphabet entry `N`. No correspondence table is needed.
-Manifest generation checks that each of PHD08's 2,350 folder indices resolves
-to a unique Hangul symbol and that the corresponding KorSynthetic folder
-exists. P5 evaluation applies the same index rule at runtime and checks the
-alphabet and class-label fingerprints recorded in the manifests.
+В PHD08 и KorSynthetic номер папки `N` напрямую указывает на элемент `N` в
+`kor_101_mfcr.json`. Таблица соответствий не нужна. Генератор манифеста проверяет,
+что все 2 350 номеров папок PHD08 соответствуют разным символам хангыль и что
+папки с такими же номерами есть в KorSynthetic. При оценке P5 тот же индексный
+способ применяется во время запуска; проверяются контрольные суммы алфавита и
+набора меток классов.
 
-## Run a development experiment
+## Запуск
 
-Development configs evaluate only the reserved validation classes. They do
-not run the configured test protocol automatically:
+В разработочном запуске оцениваются только классы проверочной части; итоговая
+оценка автоматически не запускается. Например, один пробный запуск метрического
+обучения на PHD08:
 
 ```bash
 python scripts/launch_experiment.py \
   --config phd08_metric_dev \
-  --models-dir /path/to/models
+  --models-dir /путь/к/моделям
 ```
 
-The synthetic-to-PHD08 P5 configs train a KorSynthetic classifier and evaluate
-it on the 2,350 index-aligned PHD08 classes. The 2350-class config trains on that
-subset; the `full` config trains on all Hangul syllables. To start either
-protocol, pass both dataset roots and explicitly enable the fixed test run:
+Конфиги P5 обучают классификатор на KorSynthetic и оценивают его на 2 350
+классах PHD08, соответствующих символам по индексу папки. Конфиг
+`phd08_synthetic_2350` обучается на этом подмножестве, а
+`phd08_synthetic_full` — на всех 11 172 символах хангыль. Чтобы включить итоговую
+оценку, добавь `--run-test`:
 
 ```bash
 python scripts/launch_experiment.py \
   --config phd08_synthetic_2350 \
-  --models-dir /path/to/models \
+  --models-dir /путь/к/моделям \
   --run-test
 ```
 
-The P5 test split is currently all PHD08 images in the 2,350 index-aligned
-classes; classification processes those images in batches without retaining
-all image references or predictions in memory. This is a declared transfer
-protocol, not source-disjoint evaluation.
+Итоговый набор P5 включает все изображения 2 350 индексно согласованных классов
+PHD08. Классификационная оценка читает изображения пакетами и не сохраняет в
+памяти ссылки на все файлы и все предсказания разом. Это отдельный протокол
+переноса между источниками, не оценка с разделением по источнику.
 
-Available starter configs cover class-disjoint retrieval, closed-set
-classification, few-shot episodes, CLINC OOS rejection, and Omniglot run-folder
-one-shot evaluation. `kornet2` loads the current
-`zoo/KorNet2.json` architecture. CLINC uses RoBERTa-base; Hugging Face weights
-are pinned to a model revision in the configs. Without `--models-dir`,
-Transformers may download and cache them; with it, provide the matching local
-repository folder. `model.local_files_only=true` can also require a local
-Transformers cache when `--models-dir` is omitted. TorchVision weights are named
-explicitly; CUB includes ResNet-50 and ViT-B/16 lines. With `--models-dir`, put
-their checkpoints in its `torchvision/checkpoints/` subfolder; alternatively,
-set `model.weights_path` to a matching local state dict.
+Стартовые конфиги охватывают поиск на новых классах, обычную классификацию,
+классификацию по нескольким опорным примерам, отказ от неизвестных намерений
+CLINC и оценку Omniglot по папкам заданий с одним опорным примером (one-shot).
+`kornet2` загружает описание
+архитектуры из `zoo/KorNet2.json`. В CLINC используются RoBERTa-base и MiniLM с
+зафиксированными в конфигах ревизиями. Без `--models-dir` Transformers может
+скачать их в собственный кэш; с этим параметром нужно положить полный снимок
+нужной ревизии в указанную папку. Если `--models-dir` не задан, параметр
+`model.local_files_only=true` требует, чтобы модель уже была в кэше Transformers.
+Для CUB предусмотрены
+ResNet-50 и ViT-B/16 с явно указанными весами ImageNet. При использовании
+`--models-dir` положи файлы TorchVision в `torchvision/checkpoints/`; также можно
+указать собственный полный словарь весов модели (`state_dict`) в `model.weights_path`.
 
-The frozen SentenceTransformer baseline is inference-only:
+Замороженный SentenceTransformer — это режим оценки без обучения. Запусти его
+так:
 
 ```bash
 python scripts/launch_experiment.py \
   --config clinc150_sentence_transformer_frozen \
-  --models-dir /path/to/models \
+  --models-dir /путь/к/моделям \
   --split validation
 ```
 
-Use `--split test` for its test retrieval only after settings are fixed.
-`--calibrate-with-validation` is for threshold-based open-set evaluation. The
-fine-tuned MiniLM comparison is `clinc150_sentence_transformer_finetune_dev.json`.
+После фиксации настроек укажи `--split test`, чтобы оценить поиск похожих
+объектов на отложенных запросах. `--calibrate-with-validation` нужен только для
+оценки с порогом отказа от неизвестного класса. Для дообучаемого MiniLM используется
+`clinc150_sentence_transformer_finetune_dev`.
 
-To expand a development config into a fixed seed/loss/selector matrix, for
-example:
+Для короткого пилота можно сократить число эпох и шагов, например на CUB:
 
 ```bash
 python scripts/launch_experiment.py \
   --config cub200_metric_dev \
-  --models-dir /path/to/models \
+  --models-dir /путь/к/моделям \
   --seed 1 --losses catml --selectors random \
   --examples-per-class 10 --epochs 1 --steps-per-epoch 2
 ```
 
-The launcher executes the generated matrix in this same command. It selects
-the P5 second dataset root automatically, or accepts `--eval-data-root` to
-override it. A final-stage matrix (`--stage final`) is supported for retrieval
-dev configs; add `--run-test` only after validation and settings are frozen. The
-runner supports the in-repository objectives and selectors, N-way/K-shot
-nearest-support or prototype evaluation, CLINC known/OOS threshold
-calibration, and the existing Omniglot run-folder evaluator. PFML, Proxy-AN,
-full ProtoNet episode training, and exact historical Omniglot task reproduction
-remain external baselines/adapters, not silently substituted by this runner.
-The CUB pilot above runs two train steps plus validation; it checks the pipeline
-but is not a scientific result. Increase the budget only after it completes on
-the target cluster.
+Сценарий запуска создаст и запустит матрицу в том же вызове. Для итоговой оценки
+на классах, отложенных от обучения, используй `--stage final --run-test` после
+фиксации настроек на проверочной части. Этот режим предназначен для конфигов
+метрического обучения с проверочной задачей поиска похожих объектов. В проекте
+доступны реализованные функции потерь и способы выборки, эпизодическая оценка
+по одному или нескольким опорным примерам (1-shot/5-shot) по ближайшему
+опорному примеру или прототипу, калибровка порога известных/неизвестных намерений
+CLINC и оценка Omniglot по папкам заданий.
 
-For a final class-disjoint model after choosing settings on validation:
+PFML, Proxy-AN, полностью обучаемый ProtoNet и точное воспроизведение исходного
+протокола Omniglot остаются внешними методами или адаптерами: сценарий запуска не
+подменяет их другими алгоритмами.
 
-```bash
-python scripts/launch_experiment.py \
-  --config phd08_metric_dev \
-  --models-dir /path/to/models \
-  --stage final --run-test --seeds 1 \
-  --losses catml --selectors random
-```
+## Определение CATML в текущей реализации
 
-`--run-test` is an explicit opt-in. It calibrates/selects using validation,
-then evaluates the configured final test split once and writes the per-run
-result beside the checkpoint.
-
-## CATML definition used here
-
-`CATMLLoss`, exported by the root `loss.py`, follows the formula in
+`CATMLLoss`, экспортируемый из корневого `loss.py`, соответствует формуле из
 `/home/arseniy/phd/Dissertation/catml_definition.tex`:
 
-- `h` is the encoder output; triplet distances use coordinate-wise
+- `h` — выход энкодера; для расстояний триплета применяется покоординатный
   `softplus(h)`.
-- The positive term is the unsquared positive distance; the ranking term is
-  `softplus(d_ap - d_an + margin)`.
-- The class-radius term uses `h`, not the softplus-transformed representation.
-- The configured default is mean over triplets and per-sample class weights
-  `m_c / B`, with current differentiable batch centers.
+- Положительный штраф использует обычное, не возведённое в квадрат расстояние;
+  штраф ранжирования задаётся через `softplus(d_ap - d_an + margin)`.
+- Штраф радиуса класса вычисляется по `h`, а не по представлению после softplus.
+- По умолчанию значения усредняются по триплетам и взвешиваются по примерам
+  класса `m_c / B`; центры текущего пакета дифференцируемы.
 
-The dissertation notes that the historical experiment's exact reductions and
-center-gradient mode still need confirmation from its original run code. The
-runner therefore records this reduction and center mode in every resolved
-config/checkpoint instead of labelling it an exact reproduction. A nonzero
-`norm_epsilon` is a smoothed-norm variant and must be reported separately.
+В диссертации точные способы усреднения исторического запуска и режим градиента
+центров пока не подтверждены исходным кодом. Поэтому launcher сохраняет выбранные
+настройки усреднения и центров в конфиге каждого запуска и не называет их точным
+воспроизведением. Ненулевой `norm_epsilon` означает сглаженный вариант нормы;
+его нужно указывать отдельно.
 
-APM updates class probabilities from train-batch radii. The default small
-unobserved-class floor prevents classes from becoming permanently
-unsampleable before their first radius is observed; setting it to zero matches
-the unsmoothed probability rule more closely but can starve unobserved classes.
-Auto-clustering uses sampled train embeddings and only selects a neighbor that
-is present in the current P×K batch, with random fallback. These are explicit
-online adaptations of the documented selectors.
+APM обновляет вероятности выбора классов по радиусам, наблюдаемым в обучающих
+пакетах. Небольшая минимальная вероятность для ещё не наблюдавшихся классов
+не даёт им навсегда исчезнуть из выборки; при нулевом значении такие классы могут
+перестать выбираться. Auto-clustering использует векторы обучающих примеров и
+выбирает соседний класс, только если тот есть в текущем пакете P×K; иначе
+применяется случайный выбор. Это явно заданные адаптации описанных селекторов.
 
-## Limitations to keep visible
+## Ограничения, которые нужно учитывать
 
-- PHD08 currently has no source-family/font identifiers in the experiment
-  manifest. Its 60/20/20 image split is not described as source-disjoint.
-- N-way/K-shot episodes are sampled reproducibly from the manifest seed; the
-  exact support/query IDs are saved as `episodes_validation.json` and
-  `episodes_test.json` so baselines can share them. CLINC OOS thresholds are
-  calibrated on validation and transferred to test using the selected
-  checkpoint.
-- The local Omniglot `all_runs` folder is accepted by the run-folder one-shot
-  adapter, but it has not been confirmed against the exact official task-file
-  protocol. Do not call it an exact literature reproduction yet.
-- PFML, Proxy-AN, a fully trained ProtoNet baseline, and source-aware PHD08
-  grouping are external/remaining baselines; the runner does not silently
-  substitute another objective for them.
-- Each training config defaults to a manageable development budget. The
-  planned multi-seed full matrix is generated only after the pilot budget and
-  cluster throughput have been fixed.
+- В манифесте PHD08 нет идентификаторов источника изображения или семейства
+  шрифта. Разбиение изображений 60/20/20 нельзя называть разделением по источнику.
+- Эпизоды N-way/K-shot (N классов, K опорных примеров) формируются
+  воспроизводимо по начальному значению генератора из манифеста. Точные
+  идентификаторы опорных примеров и запросов сохраняются в
+  `episodes_validation.json` и `episodes_test.json`, чтобы разные методы
+  использовали одинаковые эпизоды. Порог CLINC для неизвестных намерений
+  настраивается на проверочной части и применяется к итоговой оценке.
+- Локальная папка Omniglot `all_runs` поддерживается адаптером оценки по одному
+  опорному примеру,
+  но пока не подтверждено, что это точный официальный набор заданий.
+- PFML, Proxy-AN, полностью обучаемый ProtoNet и группировка PHD08 по источникам
+  не выполняются текущим сценарием запуска.
+- Каждый конфиг содержит стартовый, относительно небольшой бюджет обучения.
+  Полную матрицу запусков следует определять после пилота и измерения скорости
+  на целевой вычислительной машине.
