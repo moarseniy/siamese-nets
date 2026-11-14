@@ -1,12 +1,11 @@
 # Experiment runner
 
-This package contains the manifests, experiment configs, and internal adapters
-for the CLINC150, CUB-200-2011, Omniglot, PHD08, and KorSynthetic plans. Launch
-them through the repository's existing `train.py`; it keeps the legacy
-`common` config path and dispatches manifest configs to the integrated
-training utilities. The experiment implementation lives in root-level modules
-and is exposed through the existing `dataset.py`, `loss.py`, `model.py`,
-`mining_methods.py`, `metrics.py`, and `train_utils.py` APIs.
+This package contains the manifests and experiment configs for CLINC150,
+CUB-200-2011, Omniglot, PHD08, and KorSynthetic. Launch all of them through the
+same command, `scripts/launch_experiment.py`; it calls the existing `train.py`
+internally and uses the integrated training APIs. The experiment implementation
+lives in root-level modules exposed through the existing `dataset.py`, `loss.py`,
+`model.py`, `mining_methods.py`, `metrics.py`, and `train_utils.py` APIs.
 
 For the launch order, config-to-plan map, matrix generation, and exact commands,
 see the [Russian runbook](RUNBOOK.md).
@@ -49,13 +48,12 @@ and confirming the same batch protocol across compared runs. `torch.compile`
 is intentionally left out of the baseline to keep compile time and graph
 specialization from changing the initial runtime comparison.
 
-For configs with pretrained models, pass `--models-dir /path/to/models` to
-`train.py` or `scripts/run_matrix.py`. Hugging Face repositories are resolved
-from that directory by model ID (`FacebookAI/roberta-base`,
-`sentence-transformers/all-MiniLM-L6-v2`); TorchVision checkpoints use
-`/path/to/models/torchvision/checkpoints/`. With this flag the runner requires
-the local files and does not fall back to downloading them. See [the runbook](RUNBOOK.md)
-for the expected layout and command examples.
+Pass `--models-dir /path/to/models` to the launcher. It resolves Hugging Face
+repositories by model ID (`FacebookAI/roberta-base`,
+`sentence-transformers/all-MiniLM-L6-v2`) and TorchVision checkpoints under
+`/path/to/models/torchvision/checkpoints/`. With this flag it requires local
+files and does not fall back to downloading them. See [the runbook](RUNBOOK.md)
+for the expected layout and commands.
 
 Retrieval keeps the gallery embeddings on the GPU and computes query scores in
 chunks. This fits the planned PHD08 class-disjoint gallery comfortably at the
@@ -102,10 +100,9 @@ Development configs evaluate only the reserved validation classes. They do
 not run the configured test protocol automatically:
 
 ```bash
-python train.py \
-  --config experiments/configs/phd08_metric_dev.json \
-  --data-root /home/arseniy/data/PHD08_dataset \
-  --output experiments/runs/phd08/catml_random_seed20261113
+python scripts/launch_experiment.py \
+  --config phd08_metric_dev \
+  --models-dir /path/to/models
 ```
 
 The synthetic-to-PHD08 P5 configs train a KorSynthetic classifier and evaluate
@@ -114,11 +111,9 @@ subset; the `full` config trains on all Hangul syllables. To start either
 protocol, pass both dataset roots and explicitly enable the fixed test run:
 
 ```bash
-python train.py \
-  --config experiments/configs/phd08_synthetic_2350.json \
-  --data-root /home/arseniy/data/kor_synthetic \
-  --eval-data-root /home/arseniy/data/PHD08_dataset \
-  --output experiments/runs/p5/kor2350_to_phd08 \
+python scripts/launch_experiment.py \
+  --config phd08_synthetic_2350 \
+  --models-dir /path/to/models \
   --run-test
 ```
 
@@ -142,13 +137,10 @@ set `model.weights_path` to a matching local state dict.
 The frozen SentenceTransformer baseline is inference-only:
 
 ```bash
-python train.py \
-  --config experiments/configs/clinc150_sentence_transformer_frozen.json \
-  --data-root /home/arseniy/data/clinc150 \
+python scripts/launch_experiment.py \
+  --config clinc150_sentence_transformer_frozen \
   --models-dir /path/to/models \
-  --split validation \
-  --evaluate-pretrained \
-  --output experiments/runs/clinc150/st-frozen/validation.json
+  --split validation
 ```
 
 Use `--split test` for its test retrieval only after settings are fixed.
@@ -159,27 +151,17 @@ To expand a development config into a fixed seed/loss/selector matrix, for
 example:
 
 ```bash
-python scripts/run_matrix.py \
-  --config experiments/configs/cub200_metric_dev.json \
-  --data-root /home/arseniy/data/CUB-200-2011 \
-  --output-dir experiments/jobs/cub_pilot \
-  --seeds 1 \
-  --losses catml \
-  --selectors random \
-  --examples-per-class 10 \
-  --epochs 1 \
-  --steps-per-epoch 2
-bash experiments/jobs/cub_pilot/run.sh
+python scripts/launch_experiment.py \
+  --config cub200_metric_dev \
+  --models-dir /path/to/models \
+  --seed 1 --losses catml --selectors random \
+  --examples-per-class 10 --epochs 1 --steps-per-epoch 2
 ```
 
-For a config with a second evaluation dataset, also pass `--eval-data-root`;
-the generated `train.py` commands will include it.
-
-`run_matrix.py` writes resolved configs, `jobs.jsonl`, and a sequential `run.sh`;
-the `bash` line starts training. Use a development matrix first. A final-stage
-matrix (`--stage final`) is supported for retrieval dev configs: it uses the
-manifest's final-train class set and fixed last epoch. Add `--run-test` only
-after validation and settings are frozen. The
+The launcher executes the generated matrix in this same command. It selects
+the P5 second dataset root automatically, or accepts `--eval-data-root` to
+override it. A final-stage matrix (`--stage final`) is supported for retrieval
+dev configs; add `--run-test` only after validation and settings are frozen. The
 runner supports the in-repository objectives and selectors, N-way/K-shot
 nearest-support or prototype evaluation, CLINC known/OOS threshold
 calibration, and the existing Omniglot run-folder evaluator. PFML, Proxy-AN,
@@ -192,16 +174,11 @@ the target cluster.
 For a final class-disjoint model after choosing settings on validation:
 
 ```bash
-python scripts/run_matrix.py \
-  --config experiments/configs/phd08_metric_dev.json \
-  --data-root /home/arseniy/data/PHD08_dataset \
-  --output-dir experiments/jobs/phd08_final_pilot \
-  --seeds 1 \
-  --losses catml \
-  --selectors random \
-  --examples-per-class all \
-  --stage final \
-  --run-test
+python scripts/launch_experiment.py \
+  --config phd08_metric_dev \
+  --models-dir /path/to/models \
+  --stage final --run-test --seeds 1 \
+  --losses catml --selectors random
 ```
 
 `--run-test` is an explicit opt-in. It calibrates/selects using validation,

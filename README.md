@@ -23,8 +23,10 @@ classification and retrieval metrics, and BF16 training options. The plan
 files remain the scientific protocol; the runner records its resolved config
 and manifest in each run folder.
 
-Start with [experiments/README.md](experiments/README.md) for Blackwell setup,
-data manifests, and launch commands. Starter configs are in
+Use `python scripts/launch_experiment.py --config <name> --models-dir <path>`
+as the single entry point for experiment runs and matrices. Start with
+[experiments/RUNBOOK.md](experiments/RUNBOOK.md) for examples, Blackwell setup,
+and data manifests. Starter configs are in
 `experiments/configs/`; generated split manifests are in
 `experiments/manifests/`.
 
