@@ -39,6 +39,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--eval-data-root", type=Path, help="Second dataset root for cross-domain evaluation configs")
+    parser.add_argument("--models-dir", type=Path, help="Local model repository folders and TorchVision weights")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seeds", default="1,2,3,4,5")
     parser.add_argument("--losses", default="catml,triplet")
@@ -55,6 +56,10 @@ def main() -> None:
     args = parser.parse_args()
 
     base = json.loads(args.config.read_text(encoding="utf-8"))
+    if args.models_dir is not None:
+        args.models_dir = args.models_dir.expanduser().resolve()
+        if not args.models_dir.is_dir():
+            parser.error(f"models directory does not exist: {args.models_dir}")
     if (
         base.get("evaluation_dataset")
         and base["evaluation_dataset"].get("data_root") is None
@@ -161,6 +166,8 @@ def main() -> None:
                     command = ["python", "train.py", "--config", str(config_path), "--data-root", str(args.data_root), "--output", str(output_path)]
                     if args.eval_data_root is not None:
                         command.extend(("--eval-data-root", str(args.eval_data_root)))
+                    if args.models_dir is not None:
+                        command.extend(("--models-dir", str(args.models_dir)))
                     if args.run_test and config.get("test"):
                         command.append("--run-test")
                     jobs.append({"config": str(config_path), "output": str(output_path), "command": shlex.join(command)})

@@ -113,6 +113,7 @@ if __name__ == "__main__":
     parser.add_argument('-c', '--config', type=str, required=True, help='Legacy or manifest experiment config')
     parser.add_argument('--data-root', type=str, help='Dataset root for manifest experiment configs')
     parser.add_argument('--eval-data-root', type=str, help='Second dataset root for cross-domain evaluation configs')
+    parser.add_argument('--models-dir', type=str, help='Root containing local pretrained model folders and TorchVision weights')
     parser.add_argument('--output', type=str, help='Run output directory for manifest experiment configs')
     parser.add_argument('--resume', type=str, help='Checkpoint to resume from')
     parser.add_argument('--run-test', action='store_true', help='Evaluate the fixed test protocol after training')
@@ -137,10 +138,16 @@ if __name__ == "__main__":
             if args.run_test or args.resume:
                 parser.error('--evaluate-pretrained cannot be combined with --run-test or --resume')
             output_path = args.output or str(Path('experiments') / 'runs' / config_path.stem / f"{args.split}.json")
-            evaluate_pretrained_experiment(config_path, data_root, output_path, args.split, args.calibrate_with_validation)
+            evaluate_pretrained_experiment(
+                config_path, data_root, output_path, args.split,
+                args.calibrate_with_validation, args.models_dir,
+            )
             raise SystemExit(0)
         output_dir = args.output or str(Path('experiments') / 'runs' / config_path.stem / f"seed{raw_config.get('seed', 20261113)}")
-        run_experiment_training(config_path, data_root, output_dir, args.resume, args.run_test, args.eval_data_root)
+        run_experiment_training(
+            config_path, data_root, output_dir, args.resume, args.run_test,
+            args.eval_data_root, args.models_dir,
+        )
         raise SystemExit(0)
 
     if args.run_test or args.evaluate_pretrained or args.calibrate_with_validation or args.split != 'validation' or args.eval_data_root:
@@ -151,6 +158,15 @@ if __name__ == "__main__":
 
     if cfg['common'].get('seed') is not None:
         set_seed(int(cfg['common']['seed']))
+
+    if args.models_dir and cfg['common'].get('model_name') in ('ResNet50', 'MobileNet'):
+        from experiment_models import configure_model_cache
+        cache_config = {
+            'modality': 'image',
+            'backbone': 'resnet50' if cfg['common']['model_name'] == 'ResNet50' else 'mobilenet_v2',
+            'pretrained': True,
+        }
+        configure_model_cache(cache_config, args.models_dir)
 
     repo_dir = os.path.dirname(os.path.dirname(config_path))
     save_pt, save_im_pt = prepare_dirs(repo_dir, cfg['common'], cfg['common']['device'])

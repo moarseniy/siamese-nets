@@ -49,6 +49,14 @@ and confirming the same batch protocol across compared runs. `torch.compile`
 is intentionally left out of the baseline to keep compile time and graph
 specialization from changing the initial runtime comparison.
 
+For configs with pretrained models, pass `--models-dir /path/to/models` to
+`train.py` or `scripts/run_matrix.py`. Hugging Face repositories are resolved
+from that directory by model ID (`FacebookAI/roberta-base`,
+`sentence-transformers/all-MiniLM-L6-v2`); TorchVision checkpoints use
+`/path/to/models/torchvision/checkpoints/`. With this flag the runner requires
+the local files and does not fall back to downloading them. See [the runbook](RUNBOOK.md)
+for the expected layout and command examples.
+
 Retrieval keeps the gallery embeddings on the GPU and computes query scores in
 chunks. This fits the planned PHD08 class-disjoint gallery comfortably at the
 configured embedding sizes; if another dataset or backbone exceeds available
@@ -123,12 +131,13 @@ Available starter configs cover class-disjoint retrieval, closed-set
 classification, few-shot episodes, CLINC OOS rejection, and Omniglot run-folder
 one-shot evaluation. `kornet2` loads the current
 `zoo/KorNet2.json` architecture. CLINC uses RoBERTa-base; Hugging Face weights
-are pinned to a model revision in the configs and cached by Transformers, or
-set `model.local_files_only=true` to require a local snapshot. TorchVision
-weights are also named explicitly; CUB includes both the ResNet-50 and ViT-B/16
-development lines. Pre-cache TorchVision weights on an internet-connected
-machine or set `model.weights_path` to a matching full state dict on the
-cluster.
+are pinned to a model revision in the configs. Without `--models-dir`,
+Transformers may download and cache them; with it, provide the matching local
+repository folder. `model.local_files_only=true` can also require a local
+Transformers cache when `--models-dir` is omitted. TorchVision weights are named
+explicitly; CUB includes ResNet-50 and ViT-B/16 lines. With `--models-dir`, put
+their checkpoints in its `torchvision/checkpoints/` subfolder; alternatively,
+set `model.weights_path` to a matching local state dict.
 
 The frozen SentenceTransformer baseline is inference-only:
 
@@ -136,6 +145,7 @@ The frozen SentenceTransformer baseline is inference-only:
 python train.py \
   --config experiments/configs/clinc150_sentence_transformer_frozen.json \
   --data-root /home/arseniy/data/clinc150 \
+  --models-dir /path/to/models \
   --split validation \
   --evaluate-pretrained \
   --output experiments/runs/clinc150/st-frozen/validation.json

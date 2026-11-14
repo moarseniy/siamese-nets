@@ -10,12 +10,23 @@ import torch
 
 from dataset import ExperimentSampleDataset as SampleDataset, load_experiment_catalog as load_catalog
 from model import build_experiment_encoder as build_encoder
+from experiment_models import configure_model_cache
 from experiment_train import _load_config, _run_evaluation, set_seed
 
 
-def evaluate(config_path: Path, data_root: Path, output_path: Path, split: str, calibrate_with_validation: bool = False):
+def evaluate(
+    config_path: Path,
+    data_root: Path,
+    output_path: Path,
+    split: str,
+    calibrate_with_validation: bool = False,
+    models_dir: Path | None = None,
+):
     config = _load_config(config_path)
     config["seed"] = int(config.get("seed", 20261113))
+    config["model"] = configure_model_cache(config["model"], models_dir)
+    if models_dir is not None:
+        config["models_dir"] = str(Path(models_dir).expanduser().resolve())
     set_seed(config["seed"])
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required by this evaluation runner")
@@ -49,8 +60,8 @@ def evaluate(config_path: Path, data_root: Path, output_path: Path, split: str, 
     if catalog.modality == "text":
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(
-            config["model"]["model_name"],
-            revision=config["model"].get("revision"),
+            config["model"].get("local_model_path") or config["model"]["model_name"],
+            revision=None if config["model"].get("local_model_path") else config["model"].get("revision"),
             local_files_only=bool(config["model"].get("local_files_only", False)),
         )
 

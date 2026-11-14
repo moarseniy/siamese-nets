@@ -29,6 +29,7 @@ from loss import CATMLLoss, ProxyAnchorLoss, multi_negative_ranking, multi_simil
 from metrics import open_set_metrics, retrieval_metrics
 from mining_methods import APMState, ClassGraph, PKBatchSampler, make_triplets
 from model import build_experiment_encoder as build_encoder
+from experiment_models import configure_model_cache
 
 
 def set_seed(seed: int) -> None:
@@ -371,9 +372,20 @@ def _load_config(path: Path) -> dict:
     return config
 
 
-def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | None = None, run_test: bool = False, evaluation_data_root: Path | None = None) -> None:
+def run(
+    config_path: Path,
+    data_root: Path,
+    output_dir: Path,
+    resume: Path | None = None,
+    run_test: bool = False,
+    evaluation_data_root: Path | None = None,
+    models_dir: Path | None = None,
+) -> None:
     config = _load_config(config_path)
     config["seed"] = int(config.get("seed", 20261113))
+    config["model"] = configure_model_cache(config["model"], models_dir)
+    if models_dir is not None:
+        config["models_dir"] = str(Path(models_dir).expanduser().resolve())
     set_seed(config["seed"])
     if not torch.cuda.is_available():
         raise RuntimeError("A CUDA GPU is required by this experiment runner; select the Blackwell cluster environment")
@@ -590,8 +602,8 @@ def run(config_path: Path, data_root: Path, output_dir: Path, resume: Path | Non
     if catalog.modality == "text":
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(
-            config["model"].get("model_name", "FacebookAI/roberta-base"),
-            revision=config["model"].get("revision"),
+            config["model"].get("local_model_path") or config["model"].get("model_name", "FacebookAI/roberta-base"),
+            revision=None if config["model"].get("local_model_path") else config["model"].get("revision"),
             local_files_only=bool(config["model"].get("local_files_only", False)),
         )
 

@@ -4,6 +4,30 @@
 Команды запускайте из корня репозитория на машине с CUDA; корни данных ниже
 соответствуют указанным тобой папкам.
 
+Сначала укажи каталог, куда ты скачал модели, и передавай его как
+`--models-dir` в командах обучения/оценки и генерации матриц:
+
+```bash
+export MODEL_DIR=/mnt/pretrained-models  # замени на свой путь
+```
+
+Для Hugging Face подходят локальные папки `MODEL_DIR/<organization>/<repo>`
+(например, `FacebookAI/roberta-base`) или стандартный HF cache со
+`models--<organization>--<repo>/snapshots/<revision>`. Если это обычная
+папка-экспорт, скачай в неё ревизию, указанную в конфиге. TorchVision
+checkpoints должны лежать в `MODEL_DIR/torchvision/checkpoints/`. Передавая
+`--models-dir`, ты включаешь локальный режим: если требуемых файлов не
+найдётся, запуск завершится ошибкой и не станет скачивать их сам.
+
+Ожидаемый пример структуры:
+
+```text
+/mnt/pretrained-models/
+  FacebookAI/roberta-base/config.json
+  sentence-transformers/all-MiniLM-L6-v2/config.json
+  torchvision/checkpoints/<TorchVision checkpoint files>
+```
+
 ## 1. Сначала один пилот
 
 Установи окружение по разделу Blackwell в [README экспериментов](README.md),
@@ -15,6 +39,7 @@
 python scripts/run_matrix.py \
   --config experiments/configs/cub200_metric_dev.json \
   --data-root /home/arseniy/data/CUB-200-2011 \
+  --models-dir "$MODEL_DIR" \
   --output-dir experiments/jobs/pilot_cub \
   --seeds 1 --losses catml --selectors random \
   --examples-per-class 10 --epochs 1 --steps-per-epoch 2
@@ -35,6 +60,7 @@ bash experiments/jobs/pilot_cub/run.sh
 python train.py \
   --config experiments/configs/clinc150_classification.json \
   --data-root /home/arseniy/data/clinc150 \
+  --models-dir "$MODEL_DIR" \
   --output experiments/runs/clinc150/classification
 ```
 
@@ -54,7 +80,8 @@ manifest, `metrics.jsonl`, `best.pt` и `last.pt`. Для продолжения
 
 ```bash
 python train.py --config experiments/configs/<имя>.json \
-  --data-root <корень-данных> --output experiments/runs/<имя>/<seed>
+  --data-root <корень-данных> --models-dir "$MODEL_DIR" \
+  --output experiments/runs/<имя>/<seed>
 ```
 
 В таблице указаны имя конфига и корень данных. Передавай `--run-test` только
@@ -88,6 +115,7 @@ python train.py --config experiments/configs/<имя>.json \
 python train.py \
   --config experiments/configs/clinc150_sentence_transformer_frozen.json \
   --data-root /home/arseniy/data/clinc150 \
+  --models-dir "$MODEL_DIR" \
   --evaluate-pretrained --split validation \
   --output experiments/runs/clinc150/st_frozen/validation.json
 
@@ -95,6 +123,7 @@ python train.py \
 python train.py \
   --config experiments/configs/clinc150_sentence_transformer_frozen.json \
   --data-root /home/arseniy/data/clinc150 \
+  --models-dir "$MODEL_DIR" \
   --evaluate-pretrained --split test \
   --output experiments/runs/clinc150/st_frozen/test.json
 
@@ -102,6 +131,7 @@ python train.py \
 python train.py \
   --config experiments/configs/clinc150_sentence_transformer_finetune_dev.json \
   --data-root /home/arseniy/data/clinc150 \
+  --models-dir "$MODEL_DIR" \
   --output experiments/runs/clinc150/st_finetune/seed1
 
 # P5: тест на PHD08 включается явно; тестовый split использует все 2,350 классов
@@ -109,6 +139,7 @@ python train.py \
   --config experiments/configs/phd08_synthetic_2350.json \
   --data-root /home/arseniy/data/kor_synthetic \
   --eval-data-root /home/arseniy/data/PHD08_dataset \
+  --models-dir "$MODEL_DIR" \
   --output experiments/runs/p5/kor2350_to_phd08/seed1 \
   --run-test
 ```
@@ -137,7 +168,8 @@ python train.py \
 make_closed_set_jobs() {
   local config_path="$1" data_root="$2" output_dir="$3"
   python scripts/run_matrix.py \
-    --config "$config_path" --data-root "$data_root" --output-dir "$output_dir" \
+    --config "$config_path" --data-root "$data_root" --models-dir "$MODEL_DIR" \
+    --output-dir "$output_dir" \
     --seeds 1,2,3,4,5 --losses cross_entropy --selectors random \
     --examples-per-class all,5,10
 }
@@ -176,12 +208,12 @@ validation; test они не запускают.
 make_retrieval_dev_jobs() {
   local config_path="$1" data_root="$2" output_dir="$3"
   python scripts/run_matrix.py \
-    --config "$config_path" --data-root "$data_root" \
+    --config "$config_path" --data-root "$data_root" --models-dir "$MODEL_DIR" \
     --output-dir "$output_dir/catml" --seeds 1,2,3,4,5 \
     --losses catml --selectors random,apm,auto_clusters,apm_auto \
     --examples-per-class all
   python scripts/run_matrix.py \
-    --config "$config_path" --data-root "$data_root" \
+    --config "$config_path" --data-root "$data_root" --models-dir "$MODEL_DIR" \
     --output-dir "$output_dir/triplet" --seeds 1,2,3,4,5 \
     --losses triplet --selectors random,semi_hard,batch_hard \
     --examples-per-class all
@@ -204,6 +236,7 @@ make_retrieval_dev_jobs experiments/configs/phd08_metric_dev.json \
 python scripts/run_matrix.py \
   --config experiments/configs/phd08_metric_dev.json \
   --data-root /home/arseniy/data/PHD08_dataset \
+  --models-dir "$MODEL_DIR" \
   --output-dir experiments/jobs/phd08_final_catml_random \
   --stage final --seeds 1,2,3,4,5 --losses catml --selectors random \
   --examples-per-class all --run-test
@@ -234,7 +267,8 @@ done
 make_fewshot_jobs() {
   local config_path="$1" data_root="$2" output_dir="$3" k_shot="$4"
   python scripts/run_matrix.py \
-    --config "$config_path" --data-root "$data_root" --output-dir "$output_dir" \
+    --config "$config_path" --data-root "$data_root" --models-dir "$MODEL_DIR" \
+    --output-dir "$output_dir" \
     --seeds 1,2,3,4,5 --losses catml --selectors random \
     --examples-per-class all --k-shot "$k_shot" --run-test
 }
@@ -267,6 +301,7 @@ make_fewshot_jobs experiments/configs/phd08_fewshot_dev.json \
 python scripts/run_matrix.py \
   --config experiments/configs/clinc150_open_set.json \
   --data-root /home/arseniy/data/clinc150 \
+  --models-dir "$MODEL_DIR" \
   --output-dir experiments/jobs/clinc_open_set \
   --seeds 1,2,3,4,5 --losses catml --selectors random \
   --examples-per-class all --run-test
@@ -287,6 +322,7 @@ python scripts/run_matrix.py \
   --config experiments/configs/phd08_synthetic_2350.json \
   --data-root /home/arseniy/data/kor_synthetic \
   --eval-data-root /home/arseniy/data/PHD08_dataset \
+  --models-dir "$MODEL_DIR" \
   --output-dir experiments/jobs/p5_2350 \
   --seeds 1,2,3,4,5 --losses cross_entropy --selectors random \
   --examples-per-class all --run-test
