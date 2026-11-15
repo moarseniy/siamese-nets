@@ -10,8 +10,12 @@ import argparse
 import hashlib
 import json
 import random
+import sys
 from pathlib import Path
 from typing import Iterable
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from phd08_protocol import PHD08_BASE_FAMILIES_PER_CLASS, PHD08_FAMILY_VARIANTS_PER_BASE, phd08_family_id
 
 
 SCHEMA_VERSION = 1
@@ -262,18 +266,56 @@ def _phd_manifest(root: Path, seed: int, deep_scan: bool = False, kor_root: Path
     if any(not label.isdigit() for label in labels) or len({int(label) for label in labels}) != len(labels):
         raise ValueError("PHD08 class folders must have unique numeric names used as alphabet indices")
     train_classes, valid_classes, test_classes = _stable_split(labels, (1504, 376, 470), seed)
-    integrity = {"full_image_scan_performed": False, "source_family_metadata": "unknown"}
+    integrity = {
+        "full_image_scan_performed": False,
+        "source_family_metadata": "filename-derived candidate; full pattern audit not performed",
+    }
     counts = {"classes": len(labels), "expected_images_per_class": 2187, "expected_total_images": 5139450}
     if deep_scan:
         distribution: dict[str, int] = {}
         observed_total = 0
+        family_count_distribution: dict[str, int] = {}
+        family_size_distribution: dict[str, int] = {}
+        family_audit_errors = []
+        expected_variants = {tuple(pair) for pair in ((a, b) for a in "012" for b in "012")}
         for label in labels:
             class_dir = data_root / label
-            count = sum(1 for item in class_dir.iterdir() if item.is_file() and item.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"))
+            count = 0
+            family_variants: dict[str, set[tuple[str, str]]] = {}
+            for item in class_dir.iterdir():
+                if not item.is_file() or item.suffix.lower() not in (".png", ".jpg", ".jpeg", ".bmp"):
+                    continue
+                count += 1
+                try:
+                    family_id = phd08_family_id(label, item.name)
+                except ValueError:
+                    family_audit_errors.append(f"{label}/{item.name}: unexpected filename")
+                    continue
+                fields = item.stem.split("_")
+                family_variants.setdefault(family_id, set()).add((fields[4], fields[5]))
             distribution[str(count)] = distribution.get(str(count), 0) + 1
             observed_total += count
+            family_count_distribution[str(len(family_variants))] = family_count_distribution.get(str(len(family_variants)), 0) + 1
+            for family_id, variants in family_variants.items():
+                family_size_distribution[str(len(variants))] = family_size_distribution.get(str(len(variants)), 0) + 1
+                if variants != expected_variants:
+                    family_audit_errors.append(f"{family_id}: expected all 9 final-index combinations")
+            if len(family_variants) != PHD08_BASE_FAMILIES_PER_CLASS:
+                family_audit_errors.append(f"{label}: expected {PHD08_BASE_FAMILIES_PER_CLASS} filename families, found {len(family_variants)}")
         integrity["full_image_scan_performed"] = True
         integrity["images_per_class_distribution"] = distribution
+        integrity["filename_family_audit"] = {
+            "rule": "class folder + first four underscore-separated filename fields",
+            "groups_per_class_distribution": family_count_distribution,
+            "variants_per_family_distribution": family_size_distribution,
+            "expected_groups_per_class": PHD08_BASE_FAMILIES_PER_CLASS,
+            "expected_variants_per_family": PHD08_FAMILY_VARIANTS_PER_BASE,
+            "verified": not family_audit_errors,
+            "errors": family_audit_errors[:20],
+        }
+        if family_audit_errors:
+            raise ValueError(f"PHD08 filename-family audit failed: {family_audit_errors[:5]}")
+        integrity["source_family_metadata"] = "filename-derived family pattern verified in every class"
         counts["observed_total_images"] = observed_total
     p5_protocol = None
     p5_symbols = None
@@ -314,14 +356,16 @@ def _phd_manifest(root: Path, seed: int, deep_scan: bool = False, kor_root: Path
         "class_names_sha256": hashlib.sha256("\n".join(labels).encode("utf-8")).hexdigest(),
         "p5_catalog_labels_sha256": _labels_sha256(p5_symbols) if p5_symbols is not None else None,
         "protocols": {
-            "closed_set": {"classes": labels, "sample_split": "stable_hash(uid, seed) into 60/20/20; not source-disjoint"},
+            "closed_set": {"classes": labels, "sample_split": "deterministic 60/20/20 split by filename-derived source family; not font-disjoint"},
             "class_disjoint_retrieval": {
                 "train_classes": train_classes,
                 "validation_classes": valid_classes,
                 "test_classes": test_classes,
                 "final_train_classes": sorted(train_classes + valid_classes),
                 "source_disjoint": False,
-                "note": "Source/family metadata must be supplied separately before claiming source-disjoint evaluation.",
+                "within_class_family_split": "gallery/query use disjoint filename-derived families",
+                "font_disjoint": False,
+                "note": "Class split is disjoint; whole-font generalization is a separate protocol.",
             },
             **({"p5_synthetic_transfer": p5_protocol} if p5_protocol is not None else {}),
         },

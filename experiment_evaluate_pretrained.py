@@ -21,7 +21,10 @@ def evaluate(
     split: str,
     calibrate_with_validation: bool = False,
     models_dir: Path | None = None,
+    checkpoint: Path | None = None,
 ):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     config = _load_config(config_path)
     config["seed"] = int(config.get("seed", 20261113))
     config["model"] = configure_model_cache(config["model"], models_dir)
@@ -47,6 +50,15 @@ def evaluate(
     protocol_manifest = manifest["protocols"][config["protocol"]]
     train_classes = protocol_manifest[config.get("train_class_key", "train_classes")]
     model = build_encoder(config["model"]).to(device).eval()
+    checkpoint_state = None
+    if checkpoint is not None:
+        checkpoint = Path(checkpoint).expanduser().resolve()
+        checkpoint_state = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        model_state = checkpoint_state.get("model", checkpoint_state)
+        model.load_state_dict(model_state)
+        saved_classes = checkpoint_state.get("class_labels")
+        if saved_classes is not None and list(saved_classes) != list(train_classes):
+            raise ValueError("Checkpoint training classes do not match the evaluation config manifest")
     sample_dataset = SampleDataset(
         catalog,
         {name: index for index, name in enumerate(catalog.labels)},
@@ -66,11 +78,23 @@ def evaluate(
         )
 
     if calibrate_with_validation and split == "test":
-        validation = _run_evaluation(config, "validation", catalog, model, None, sample_dataset, tokenizer, device, train_classes, protocol_manifest)
+        validation = _run_evaluation(
+            config, "validation", catalog, model, None, sample_dataset, tokenizer,
+            device, train_classes, protocol_manifest,
+            gallery_catalog=catalog, gallery_sample_dataset=sample_dataset,
+        )
         if "confidence_threshold" in validation:
             config.setdefault("validation", {})["calibrated_threshold"] = validation["confidence_threshold"]
-    metrics = _run_evaluation(config, split, catalog, model, None, sample_dataset, tokenizer, device, train_classes, protocol_manifest, output_path.parent)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    result = {"config": str(config_path.resolve()), "checkpoint": "pretrained-only", "split": split, "metrics": metrics}
+    metrics = _run_evaluation(
+        config, split, catalog, model, None, sample_dataset, tokenizer,
+        device, train_classes, protocol_manifest, output_path.parent,
+        gallery_catalog=catalog, gallery_sample_dataset=sample_dataset,
+    )
+    result = {
+        "config": str(config_path.resolve()),
+        "checkpoint": str(checkpoint) if checkpoint is not None else "pretrained-only",
+        "split": split,
+        "metrics": metrics,
+    }
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))

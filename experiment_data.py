@@ -10,7 +10,7 @@ import json
 import hashlib
 import os
 import random
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal
@@ -20,6 +20,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
+from phd08_protocol import phd08_family_id, phd08_family_splits
 
 
 Modality = Literal["image", "text", "kor_synthetic"]
@@ -39,6 +40,7 @@ class SampleRef:
     uid: str
     value: str
     source_split: str | None = None
+    family_id: str | None = None
 
 
 class ClassSource:
@@ -52,6 +54,7 @@ class ClassSource:
         folder: Path | None = None,
         image_split_file: dict[str, str] | None = None,
         uid_prefix: str | None = None,
+        family_grouping: bool = False,
     ):
         if records is None and folder is None:
             raise ValueError("ClassSource needs records or a folder")
@@ -61,7 +64,12 @@ class ClassSource:
         self.folder = folder
         self.image_split_file = image_split_file or {}
         self.uid_prefix = uid_prefix or label
+        self.family_grouping = bool(family_grouping)
         self._file_cache: OrderedDict[str, tuple[SampleRef, ...]] = OrderedDict()
+        self._family_cache: OrderedDict[str, dict[str, tuple[SampleRef, ...]]] = OrderedDict()
+        self._family_split_cache: dict[tuple[int, str], dict[str, set[str]]] = {}
+        self._records_for_cache: OrderedDict[tuple[str, int, str], tuple[SampleRef, ...]] = OrderedDict()
+        self._representative_cache: OrderedDict[tuple[str, int, str, int], tuple[SampleRef, ...]] = OrderedDict()
 
     def _folder_records(self) -> tuple[SampleRef, ...]:
         key = str(self.folder)
@@ -69,13 +77,21 @@ class ClassSource:
             self._file_cache.move_to_end(key)
             return self._file_cache[key]
         assert self.folder is not None
-        allowed = (".png", ".jpg", ".jpeg", ".bmp", ".json")
+        allowed = (".png",) if self.family_grouping else (".png", ".jpg", ".jpeg", ".bmp", ".json")
         with os.scandir(self.folder) as entries:
             names = sorted(
                 entry.name for entry in entries
                 if entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(allowed)
             )
-        records = tuple(SampleRef(self.label, f"{self.uid_prefix}/{name}", str(self.folder / name)) for name in names)
+        records = tuple(
+            SampleRef(
+                self.label,
+                f"{self.uid_prefix}/{name}",
+                str(self.folder / name),
+                family_id=phd08_family_id(self.uid_prefix, name) if self.family_grouping else None,
+            )
+            for name in names
+        )
         self._file_cache[key] = records
         while len(self._file_cache) > 128:
             self._file_cache.popitem(last=False)
@@ -84,7 +100,50 @@ class ClassSource:
     def all_records(self) -> tuple[SampleRef, ...]:
         return tuple(self.records) if self.records is not None else self._folder_records()
 
+    def _family_groups(self) -> dict[str, tuple[SampleRef, ...]]:
+        cache_key = str(self.folder)
+        if cache_key in self._family_cache:
+            self._family_cache.move_to_end(cache_key)
+            return self._family_cache[cache_key]
+        groups: dict[str, list[SampleRef]] = defaultdict(list)
+        for record in self.all_records():
+            if record.family_id is None:
+                raise ValueError(f"Missing family ID for source-grouped class {self.label!r}")
+            groups[record.family_id].append(record)
+        result = {family_id: tuple(records) for family_id, records in groups.items()}
+        self._family_cache[cache_key] = result
+        while len(self._family_cache) > 4:
+            self._family_cache.popitem(last=False)
+        return result
+
+    def _family_ids_for_split(self, split: str, seed: int, protocol: str) -> set[str]:
+        groups = self._family_groups()
+        if protocol == "phd08_class_disjoint" and split == "train":
+            return set(groups)
+        cache_key = (int(seed), protocol)
+        if cache_key not in self._family_split_cache:
+            self._family_split_cache[cache_key] = phd08_family_splits(list(groups), int(seed))
+        if split not in self._family_split_cache[cache_key]:
+            raise ValueError(f"Unknown PHD08 family split {split!r}")
+        return self._family_split_cache[cache_key][split]
+
     def records_for(
+        self,
+        split: str,
+        seed: int,
+        protocol: str,
+    ) -> tuple[SampleRef, ...]:
+        key = (split, int(seed), protocol)
+        if key in self._records_for_cache:
+            self._records_for_cache.move_to_end(key)
+            return self._records_for_cache[key]
+        records = self._records_for_uncached(split, seed, protocol)
+        self._records_for_cache[key] = records
+        while len(self._records_for_cache) > 4:
+            self._records_for_cache.popitem(last=False)
+        return records
+
+    def _records_for_uncached(
         self,
         split: str,
         seed: int,
@@ -151,6 +210,18 @@ class ClassSource:
                 midpoint = len(ordered) // 2
                 return tuple(ordered[:midpoint] if split == "support" else ordered[midpoint:])
 
+        if self.family_grouping and protocol in ("phd08_closed", "phd08_class_disjoint"):
+            if split == "all":
+                return records
+            if protocol == "phd08_class_disjoint" and split == "train":
+                # Class labels define the train/validation/test split in P3/P4.
+                # Use every image from training classes; split families only
+                # between gallery and query within held-out classes.
+                return records
+            groups = self._family_groups()
+            allowed_families = self._family_ids_for_split(split, seed, protocol)
+            return tuple(record for family in sorted(allowed_families) for record in groups[family])
+
         bucket = lambda record: stable_bucket(record.uid, seed)
         if split == "train":
             return tuple(record for record in records if bucket(record) < 60)
@@ -167,14 +238,57 @@ class ClassSource:
         raise ValueError(f"Unknown data split {split!r} for {protocol!r}")
 
     def sample(self, split: str, seed: int, protocol: str, k: int, rng: random.Random, max_examples: int | None = None) -> list[SampleRef]:
+        if self.family_grouping and protocol in ("phd08_closed", "phd08_class_disjoint"):
+            groups = self._family_groups()
+            family_ids = sorted(self._family_ids_for_split(split, seed, protocol))
+            if max_examples is not None:
+                representative_key = (split, int(seed), protocol, int(max_examples))
+                if representative_key not in self._representative_cache:
+                    selected_families = sorted(
+                        family_ids,
+                        key=lambda family: (stable_bucket(family, seed + 7919), family),
+                    )[:max_examples]
+                    representatives = tuple(
+                        min(groups[family], key=lambda record: (stable_bucket(record.uid, seed + 15401), record.uid))
+                        for family in selected_families
+                    )
+                    self._representative_cache[representative_key] = representatives
+                    while len(self._representative_cache) > 4:
+                        self._representative_cache.popitem(last=False)
+                else:
+                    self._representative_cache.move_to_end(representative_key)
+                representatives = self._representative_cache[representative_key]
+                if len(representatives) < k:
+                    raise ValueError(f"Class {self.label!r} has {len(representatives)} source families in {split}, needs {k}")
+                return rng.sample(list(representatives), k)
+            if len(family_ids) < k:
+                raise ValueError(f"Class {self.label!r} has {len(family_ids)} source families in {split}, needs {k}")
+            selected_families = rng.sample(family_ids, k)
+            return [rng.choice(groups[family]) for family in selected_families]
         eligible = self.records_for(split, seed, protocol)
         if max_examples is not None:
-            # Stable ranking makes the 5-example set a subset of the 10-example
-            # set when both use the same seed.
-            eligible = tuple(sorted(eligible, key=lambda record: (stable_bucket(record.uid, seed + 7919), record.uid))[:max_examples])
+            eligible = self.budget_records(split, seed, protocol, max_examples)
         if len(eligible) < k:
             raise ValueError(f"Class {self.label!r} has {len(eligible)} eligible samples in {split}, needs {k}")
         return rng.sample(eligible, k)
+
+    def budget_records(self, split: str, seed: int, protocol: str, max_examples: int | None) -> tuple[SampleRef, ...]:
+        """Return a fixed, nested low-shot reference set for one class."""
+        eligible = self.records_for(split, seed, protocol)
+        if max_examples is None:
+            return eligible
+        if self.family_grouping and protocol in ("phd08_closed", "phd08_class_disjoint"):
+            groups = self._family_groups()
+            family_ids = sorted({record.family_id for record in eligible if record.family_id is not None})
+            selected = sorted(
+                family_ids,
+                key=lambda family: (stable_bucket(family, seed + 7919), family),
+            )[:max_examples]
+            return tuple(
+                min(groups[family], key=lambda record: (stable_bucket(record.uid, seed + 15401), record.uid))
+                for family in selected
+            )
+        return tuple(sorted(eligible, key=lambda record: (stable_bucket(record.uid, seed + 7919), record.uid))[:max_examples])
 
 
 class DatasetCatalog:
@@ -322,7 +436,7 @@ def load_catalog(
                     raise ValueError(f"PHD08 folder {path.name} maps to a non-Hangul alphabet symbol {label!r}")
             if label in sources:
                 raise ValueError(f"PHD08 folder indices do not map one-to-one at symbol {label!r}")
-            sources[label] = ClassSource(label, "image", folder=path, uid_prefix=path.name)
+            sources[label] = ClassSource(label, "image", folder=path, uid_prefix=path.name, family_grouping=True)
         if not sources:
             raise FileNotFoundError(f"No PHD08 class folders under {data_root}")
         class_hash = hashlib.sha256("\n".join(path.name for path in class_dirs).encode("utf-8")).hexdigest()
@@ -366,12 +480,13 @@ def load_catalog(
 
 
 class SampleDataset(Dataset):
-    def __init__(self, catalog: DatasetCatalog, label_to_id: dict[str, int], image_size: int = 224, train: bool = False, image_channels: int = 3, image_mean: list[float] | None = None, image_std: list[float] | None = None, background_labels: list[str] | None = None):
+    def __init__(self, catalog: DatasetCatalog, label_to_id: dict[str, int], image_size: int = 224, train: bool = False, image_channels: int = 3, image_mean: list[float] | None = None, image_std: list[float] | None = None, background_labels: list[str] | None = None, background_seed: int | None = None):
         self.catalog = catalog
         self.label_to_id = label_to_id
         self.train = train
         self.image_channels = int(image_channels)
         self.background_labels = background_labels
+        self.background_seed = int(background_seed) if background_seed is not None else None
         if train and catalog.name == "cub200":
             image_ops = [transforms.RandomResizedCrop(image_size, scale=(0.75, 1.0)), transforms.RandomHorizontalFlip()]
         else:
@@ -397,7 +512,13 @@ class SampleDataset(Dataset):
             with open(ref.value, "r", encoding="utf-8") as stream:
                 source = json.load(stream)
             mask = torch.as_tensor(source[1]["data"], dtype=torch.float32).reshape(1, 37, 37)
-            background_path = self.catalog.random_kor_background(random, self.background_labels)
+            background_rng = random
+            if self.background_seed is not None:
+                digest = hashlib.blake2b(
+                    f"{self.background_seed}:{ref.uid}".encode("utf-8"), digest_size=8
+                ).digest()
+                background_rng = random.Random(int.from_bytes(digest, "little"))
+            background_path = self.catalog.random_kor_background(background_rng, self.background_labels)
             if background_path not in self._background_cache:
                 with open(background_path, "r", encoding="utf-8") as stream:
                     background_data = json.load(stream)

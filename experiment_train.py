@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
 from dataset import DatasetCatalog, ExperimentSampleDataset as SampleDataset, ExperimentSampleRef as SampleRef
@@ -26,7 +27,7 @@ from dataset import (
     load_experiment_kor_alphabet as load_kor_alphabet,
 )
 from loss import CATMLLoss, ProxyAnchorLoss, multi_negative_ranking, multi_similarity, pair_contrastive, supervised_contrastive, triplet_hinge
-from metrics import open_set_metrics, retrieval_metrics
+from metrics import embedding_classification_metrics, open_set_metrics, retrieval_metrics
 from mining_methods import APMState, ClassGraph, PKBatchSampler, make_triplets
 from model import build_experiment_encoder as build_encoder
 from experiment_models import configure_model_cache
@@ -60,13 +61,14 @@ class ReferenceDataset(Dataset):
 class ReferenceStreamDataset(IterableDataset):
     """Load class references lazily so large classification tests stay bounded in RAM."""
 
-    def __init__(self, base: SampleDataset, catalog: DatasetCatalog, labels: list[str], split: str, seed: int, protocol: str):
+    def __init__(self, base: SampleDataset, catalog: DatasetCatalog, labels: list[str], split: str, seed: int, protocol: str, max_examples_per_class: int | None = None):
         self.base = base
         self.catalog = catalog
         self.labels = labels
         self.split = split
         self.seed = seed
         self.protocol = protocol
+        self.max_examples_per_class = max_examples_per_class
 
     def __iter__(self):
         worker = get_worker_info()
@@ -76,7 +78,13 @@ class ReferenceStreamDataset(IterableDataset):
             if class_index % worker_count != worker_id:
                 continue
             source = self.catalog.classes[label]
-            for reference in source.records_for(self.split, self.seed, self.protocol):
+            if self.max_examples_per_class is None:
+                references = source.records_for(self.split, self.seed, self.protocol)
+            else:
+                references = source.budget_records(
+                    self.split, self.seed, self.protocol, self.max_examples_per_class
+                )
+            for reference in references:
                 yield self.base[reference]
 
 
@@ -96,6 +104,15 @@ def _forward(model, batch: dict, modality: str, tokenizer, device: torch.device,
 
 def _class_ids(names: list[str], mapping: dict[str, int], device: torch.device) -> torch.Tensor:
     return torch.tensor([mapping[name] for name in names], device=device, dtype=torch.long)
+
+
+def _candidate_ids(global_ids: torch.Tensor, label_to_id: dict[str, int], candidates: list[str], device: torch.device) -> torch.Tensor:
+    mapping = torch.full((max(label_to_id.values(), default=-1) + 1,), -1, device=device, dtype=torch.long)
+    for local_id, label in enumerate(candidates):
+        global_id = label_to_id.get(label)
+        if global_id is not None:
+            mapping[global_id] = local_id
+    return mapping[global_ids]
 
 
 def _make_objective(config: dict, train_count: int, embedding_dim: int, device: torch.device):
@@ -143,11 +160,49 @@ def _batch_loss(loss_name, embeddings, labels, triples, loss_config, objective, 
     raise ValueError(f"Unsupported metric objective {loss_name!r}")
 
 
-def _collect_embeddings(catalog, model, sample_dataset, labels, split, protocol, config, device, tokenizer):
-    refs = list(catalog.references(labels, split, int(config["data_split_seed"]), protocol))
-    if not refs:
+def _encode_reference_stream(catalog, model, sample_dataset, labels, split, protocol, config, device, tokenizer,
+                             *, max_examples_per_class=None, collect_uids=True, seed_offset=0):
+    workers = int(config["hardware"].get("num_workers", 8))
+    dataset = ReferenceStreamDataset(
+        sample_dataset, catalog, labels, split, int(config["data_split_seed"]), protocol,
+        max_examples_per_class=max_examples_per_class,
+    )
+    generator = torch.Generator(device="cpu").manual_seed(int(config["seed"]) + seed_offset)
+    loader = DataLoader(
+        dataset,
+        batch_size=int(config.get("evaluation", {}).get("batch_size", 512)),
+        num_workers=workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=bool(config["hardware"].get("persistent_workers", False)) and workers > 0,
+        prefetch_factor=int(config["hardware"].get("prefetch_factor", 2)) if workers > 0 else None,
+        collate_fn=collate_samples,
+        worker_init_fn=worker_init_fn,
+        generator=generator,
+    )
+    vectors, ids, uids = [], [], []
+    model.eval()
+    with torch.inference_mode():
+        for batch in loader:
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                enabled=device.type == "cuda" and config["hardware"].get("precision", "bf16") == "bf16"):
+                output = _forward(model, batch, catalog.modality, tokenizer,
+                                  device, int(config["model"].get("max_length", 128)))
+            vectors.append(output.float())
+            ids.append(batch["label"].to(device, non_blocking=True))
+            if collect_uids:
+                uids.extend(batch["uid"])
+    if not vectors:
         raise ValueError(f"No {split} examples for {catalog.name}; check the manifest and data root")
-    return _encode_references(catalog, model, sample_dataset, refs, config, device, tokenizer)
+    return torch.cat(vectors), torch.cat(ids), uids
+
+
+def _collect_embeddings(catalog, model, sample_dataset, labels, split, protocol, config, device, tokenizer,
+                        *, max_examples_per_class=None, collect_uids=True):
+    return _encode_reference_stream(
+        catalog, model, sample_dataset, labels, split, protocol, config, device, tokenizer,
+        max_examples_per_class=max_examples_per_class, collect_uids=collect_uids,
+        seed_offset=(0 if split in ("valid", "gallery", "validation_query") else 1_000_003),
+    )
 
 
 def _encode_references(catalog, model, sample_dataset, refs, config, device, tokenizer):
@@ -181,6 +236,12 @@ def _run_fewshot(config, section_name, catalog, model, sample_dataset, tokenizer
     query_per_class = int(setting.get("query_per_class", 5))
     episode_count = int(setting.get("episodes", 200))
     prediction = setting.get("prediction", "prototype")
+    prediction_modes = ["nearest_support", "prototype"] if prediction == "both" else [prediction]
+    primary_prediction = setting.get("primary_prediction", prediction_modes[0])
+    distance = setting.get("distance", config.get("evaluation", {}).get("distance", "cosine"))
+    embedding_transform = setting.get(
+        "embedding_transform", config.get("evaluation", {}).get("embedding_transform", "identity")
+    )
     episode_seed = int(setting.get("episode_seed", config["data_split_seed"]))
     rng = random.Random(episode_seed + (0 if section_name == "validation" else 1_000_003))
     all_refs = []
@@ -205,38 +266,64 @@ def _run_fewshot(config, section_name, catalog, model, sample_dataset, tokenizer
     manifest_bytes = (json.dumps(episode_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
     if artifact_dir is not None:
-        episode_path = artifact_dir / f"episodes_{section_name}.json"
+        episode_path = artifact_dir / (
+            f"episodes_{section_name}_{n_way}way_{k_shot}shot_"
+            f"q{query_per_class}_n{episode_count}_seed{episode_seed}.json"
+        )
         episode_path.write_bytes(manifest_bytes)
 
     vectors, _, _ = _encode_references(catalog, model, sample_dataset, all_refs, config, device, tokenizer)
-    accuracies = []
+    if embedding_transform == "softplus":
+        vectors = torch.nn.functional.softplus(vectors.float())
+    elif embedding_transform != "identity":
+        raise ValueError("few-shot embedding_transform must be 'identity' or 'softplus'")
+    if distance not in ("cosine", "euclidean"):
+        raise ValueError("few-shot distance must be 'cosine' or 'euclidean'")
+    if primary_prediction not in prediction_modes:
+        raise ValueError("primary_prediction must be included in prediction")
+    accuracies = {mode: [] for mode in prediction_modes}
     for episode_labels, support_map, query_map in episode_indices:
         support_vectors = torch.stack([vectors[index] for label in episode_labels for index in support_map[label]])
         support_labels = [label for label in episode_labels for _ in support_map[label]]
         query_indices = [index for label in episode_labels for index in query_map[label]]
         query_labels = [label for label in episode_labels for _ in query_map[label]]
         queries = vectors[query_indices]
-        if prediction == "prototype":
+        if "prototype" in prediction_modes:
             prototypes = torch.stack([vectors[support_map[label]].mean(dim=0) for label in episode_labels])
-            scores = torch.nn.functional.normalize(queries.float(), dim=1) @ torch.nn.functional.normalize(prototypes.float(), dim=1).T
-            predictions = [episode_labels[index] for index in scores.argmax(dim=1).cpu().tolist()]
-        elif prediction == "nearest_support":
-            distances = torch.cdist(queries.float(), support_vectors.float())
-            predictions = [support_labels[index] for index in distances.argmin(dim=1).cpu().tolist()]
-        else:
-            raise ValueError("fewshot prediction must be prototype or nearest_support")
-        accuracies.append(sum(pred == truth for pred, truth in zip(predictions, query_labels)) / max(1, len(query_labels)))
-    return {
-        "episode_accuracy": float(np.mean(accuracies)),
-        "episode_std": float(np.std(accuracies, ddof=1)) if len(accuracies) > 1 else 0.0,
-        "episodes": len(accuracies),
+            if distance == "cosine":
+                scores = F.normalize(queries.float(), dim=1) @ F.normalize(prototypes.float(), dim=1).T
+                proto_predictions = [episode_labels[index] for index in scores.argmax(dim=1).cpu().tolist()]
+            else:
+                distances = torch.cdist(queries.float(), prototypes.float())
+                proto_predictions = [episode_labels[index] for index in distances.argmin(dim=1).cpu().tolist()]
+            accuracies["prototype"].append(
+                sum(pred == truth for pred, truth in zip(proto_predictions, query_labels)) / max(1, len(query_labels))
+            )
+        if "nearest_support" in prediction_modes:
+            if distance == "cosine":
+                scores = F.normalize(queries.float(), dim=1) @ F.normalize(support_vectors.float(), dim=1).T
+                nearest_predictions = [support_labels[index] for index in scores.argmax(dim=1).cpu().tolist()]
+            else:
+                distances = torch.cdist(queries.float(), support_vectors.float())
+                nearest_predictions = [support_labels[index] for index in distances.argmin(dim=1).cpu().tolist()]
+            accuracies["nearest_support"].append(
+                sum(pred == truth for pred, truth in zip(nearest_predictions, query_labels)) / max(1, len(query_labels))
+            )
+    output = {
+        "episode_accuracy": float(np.mean(accuracies[primary_prediction])),
+        "episode_std": float(np.std(accuracies[primary_prediction], ddof=1)) if len(accuracies[primary_prediction]) > 1 else 0.0,
+        "episodes": len(episode_indices),
         "n_way": n_way,
         "k_shot": k_shot,
         "episode_manifest_sha256": manifest_hash,
     }
+    for mode, values in accuracies.items():
+        output[f"{mode}_episode_accuracy"] = float(np.mean(values))
+        output[f"{mode}_episode_std"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+    return output
 
 
-def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, tokenizer, device, train_classes, protocol_manifest, artifact_dir=None):
+def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, tokenizer, device, train_classes, protocol_manifest, artifact_dir=None, *, gallery_catalog=None, gallery_sample_dataset=None):
     evaluation = config.get(section_name)
     if not evaluation:
         return {}
@@ -247,6 +334,10 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
         evaluation_classes = protocol_manifest.get(class_key)
     if evaluation_classes is None:
         evaluation_classes = train_classes
+    if evaluation.get("answer_classes") is None and evaluation.get("answer_class_key"):
+        evaluation["answer_classes"] = protocol_manifest.get(evaluation["answer_class_key"])
+        if evaluation["answer_classes"] is None:
+            raise ValueError(f"Unknown answer_class_key {evaluation['answer_class_key']!r}")
     if evaluation["task"] == "classification":
         dataset = ReferenceStreamDataset(
             sample_dataset,
@@ -255,6 +346,7 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
             evaluation.get("split", "valid"),
             int(config["data_split_seed"]),
             protocol,
+            max_examples_per_class=evaluation.get("max_examples_per_class"),
         )
         workers = int(config["hardware"].get("num_workers", 8))
         eval_generator = torch.Generator(device="cpu").manual_seed(int(config["seed"]) + (0 if section_name == "validation" else 1_000_003))
@@ -270,6 +362,13 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
             generator=eval_generator,
         )
         train_local_id = {name: index for index, name in enumerate(train_classes)}
+        answer_classes = evaluation.get("answer_classes")
+        answer_local_ids = None
+        if answer_classes is not None:
+            missing_answers = sorted(set(answer_classes) - set(train_local_id))
+            if missing_answers or not answer_classes:
+                raise ValueError(f"Classification answer set is empty or includes untrained classes: {missing_answers[:5]}")
+            answer_local_ids = torch.tensor([train_local_id[name] for name in answer_classes], device=device)
         class_count = len(train_classes)
         true_count = torch.zeros(class_count, device=device, dtype=torch.long)
         predicted_count = torch.zeros(class_count, device=device, dtype=torch.long)
@@ -280,8 +379,14 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda" and config["hardware"].get("precision", "bf16") == "bf16"):
                     embeddings = _forward(model, batch, catalog.modality, tokenizer, device, int(config["model"].get("max_length", 128)))
                     logits = head(embeddings)
+                if answer_local_ids is not None:
+                    allowed = torch.zeros(logits.shape[1], device=device, dtype=torch.bool)
+                    allowed[answer_local_ids] = True
+                    logits = logits.masked_fill(~allowed.unsqueeze(0), -torch.inf)
                 predicted = logits.argmax(dim=1)
                 truth = torch.tensor([train_local_id[name] for name in batch["class_name"]], device=device)
+                if answer_local_ids is not None and not allowed[truth].all():
+                    raise ValueError("Classification query labels include classes outside answer_classes")
                 true_count += torch.bincount(truth, minlength=class_count)
                 predicted_count += torch.bincount(predicted, minlength=class_count)
                 true_positive_count += torch.bincount(truth[truth == predicted], minlength=class_count)
@@ -291,10 +396,114 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
         denominator = true_count + predicted_count
         included = denominator > 0
         per_class_f1 = 2.0 * true_positive_count[included].float() / denominator[included].float()
-        return {
+        result = {
             "accuracy": float((true_positive_count.sum().float() / total).item()),
             "macro_f1": float(per_class_f1.mean().item()),
         }
+
+        if evaluation.get("embedding_metrics"):
+            gallery_source = evaluation.get("gallery_source", "evaluation_dataset")
+            if gallery_source == "training_dataset":
+                if gallery_catalog is None or gallery_sample_dataset is None:
+                    raise ValueError("gallery_source='training_dataset' requires the training dataset during evaluation")
+                reference_catalog = gallery_catalog
+                reference_dataset = gallery_sample_dataset
+                reference_protocol = config.get("catalog_protocol", config["protocol"])
+                reference_classes = evaluation.get("gallery_classes") or train_classes
+            elif gallery_source == "evaluation_dataset":
+                reference_catalog = catalog
+                reference_dataset = sample_dataset
+                reference_protocol = protocol
+                reference_classes = train_classes
+            else:
+                raise ValueError("gallery_source must be 'evaluation_dataset' or 'training_dataset'")
+            gallery_split = evaluation.get("gallery_split", "train")
+            gallery_budget = evaluation.get("gallery_examples_per_class", config["training"].get("examples_per_class"))
+            gallery, gallery_global_ids, _ = _collect_embeddings(
+                reference_catalog, model, reference_dataset, reference_classes, gallery_split, reference_protocol, config,
+                device, tokenizer, max_examples_per_class=gallery_budget, collect_uids=False,
+            )
+            query, query_global_ids, _ = _collect_embeddings(
+                catalog, model, sample_dataset, evaluation_classes, evaluation.get("query_split", evaluation.get("split", "valid")),
+                protocol, config, device, tokenizer,
+                max_examples_per_class=evaluation.get("query_examples_per_class"), collect_uids=False,
+            )
+            answer_classes = evaluation.get("answer_classes", train_classes)
+            gallery_local_ids = _candidate_ids(
+                gallery_global_ids, reference_dataset.label_to_id, answer_classes, device
+            )
+            query_local_ids = _candidate_ids(
+                query_global_ids, sample_dataset.label_to_id, answer_classes, device
+            )
+            keep_gallery, keep_query = gallery_local_ids >= 0, query_local_ids >= 0
+            if not keep_gallery.all():
+                gallery, gallery_local_ids = gallery[keep_gallery], gallery_local_ids[keep_gallery]
+            if not keep_query.all():
+                query, query_local_ids = query[keep_query], query_local_ids[keep_query]
+            if not len(gallery_local_ids) or not len(query_local_ids):
+                raise ValueError("Embedding-classification answer set has no matching gallery or query samples")
+            embedding_metrics = embedding_classification_metrics(
+                query, query_local_ids, gallery, gallery_local_ids,
+                num_classes=len(answer_classes),
+                distance=evaluation.get("distance", config.get("evaluation", {}).get("distance", "cosine")),
+                embedding_transform=evaluation.get(
+                    "embedding_transform", config.get("evaluation", {}).get("embedding_transform", "identity")
+                ),
+                query_chunk_size=int(config.get("evaluation", {}).get("query_chunk_size", 128)),
+            )
+            result.update(embedding_metrics)
+        return result
+
+    if evaluation["task"] == "embedding_classification":
+        gallery_source = evaluation.get("gallery_source", "evaluation_dataset")
+        if gallery_source == "training_dataset":
+            if gallery_catalog is None or gallery_sample_dataset is None:
+                raise ValueError("gallery_source='training_dataset' requires the training dataset during evaluation")
+            reference_catalog = gallery_catalog
+            reference_dataset = gallery_sample_dataset
+            reference_protocol = config.get("catalog_protocol", config["protocol"])
+            reference_classes = evaluation.get("gallery_classes") or train_classes
+        elif gallery_source == "evaluation_dataset":
+            reference_catalog = catalog
+            reference_dataset = sample_dataset
+            reference_protocol = protocol
+            reference_classes = train_classes
+        else:
+            raise ValueError("gallery_source must be 'evaluation_dataset' or 'training_dataset'")
+        gallery_split = evaluation.get("gallery_split", "train")
+        gallery_budget = evaluation.get("gallery_examples_per_class", config["training"].get("examples_per_class"))
+        gallery, gallery_global_ids, _ = _collect_embeddings(
+            reference_catalog, model, reference_dataset, reference_classes, gallery_split, reference_protocol, config,
+            device, tokenizer, max_examples_per_class=gallery_budget, collect_uids=False,
+        )
+        query, query_global_ids, _ = _collect_embeddings(
+            catalog, model, sample_dataset, evaluation_classes,
+            evaluation.get("query_split", "valid"), protocol, config, device, tokenizer,
+            max_examples_per_class=evaluation.get("query_examples_per_class"), collect_uids=False,
+        )
+        answer_classes = evaluation.get("answer_classes", train_classes)
+        gallery_local_ids = _candidate_ids(
+            gallery_global_ids, reference_dataset.label_to_id, answer_classes, device
+        )
+        query_local_ids = _candidate_ids(
+            query_global_ids, sample_dataset.label_to_id, answer_classes, device
+        )
+        keep_gallery, keep_query = gallery_local_ids >= 0, query_local_ids >= 0
+        if not keep_gallery.all():
+            gallery, gallery_local_ids = gallery[keep_gallery], gallery_local_ids[keep_gallery]
+        if not keep_query.all():
+            query, query_local_ids = query[keep_query], query_local_ids[keep_query]
+        if not len(gallery_local_ids) or not len(query_local_ids):
+            raise ValueError("Embedding-classification answer set has no matching gallery or query samples")
+        return embedding_classification_metrics(
+            query, query_local_ids, gallery, gallery_local_ids,
+            num_classes=len(answer_classes),
+            distance=evaluation.get("distance", config.get("evaluation", {}).get("distance", "cosine")),
+            embedding_transform=evaluation.get(
+                "embedding_transform", config.get("evaluation", {}).get("embedding_transform", "identity")
+            ),
+            query_chunk_size=int(config.get("evaluation", {}).get("query_chunk_size", 128)),
+        )
 
     if evaluation["task"] == "retrieval":
         classes = evaluation_classes
@@ -304,8 +513,14 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
         query, query_labels, query_ids = _collect_embeddings(
             catalog, model, sample_dataset, classes, evaluation.get("query_split", "query"), protocol, config, device, tokenizer
         )
-        return retrieval_metrics(query, query_labels, gallery, gallery_labels, query_ids=query_ids,
-                                 gallery_ids=gallery_ids, ks=tuple(evaluation.get("ks", [1, 2, 4, 8])))
+        return retrieval_metrics(
+            query, query_labels, gallery, gallery_labels, query_ids=query_ids,
+            gallery_ids=gallery_ids, ks=tuple(evaluation.get("ks", [1, 2, 4, 8])),
+            distance=evaluation.get("distance", config.get("evaluation", {}).get("distance", "cosine")),
+            embedding_transform=evaluation.get(
+                "embedding_transform", config.get("evaluation", {}).get("embedding_transform", "identity")
+            ),
+        )
     if evaluation["task"] == "fewshot":
         return _run_fewshot(config, section_name, catalog, model, sample_dataset, tokenizer, device,
                             evaluation_classes, protocol, artifact_dir=artifact_dir)
@@ -367,8 +582,8 @@ def _load_config(path: Path) -> dict:
     loss_type = config.get("loss", {}).get("type", "catml")
     if config["task"] == "classification" and loss_type != "cross_entropy":
         raise ValueError("Classification configs must set loss.type='cross_entropy'")
-    if config["task"] == "metric" and loss_type == "cross_entropy":
-        raise ValueError("Metric configs need a metric objective, not cross_entropy")
+    if config["task"] == "metric" and loss_type == "cross_entropy" and not config.get("classification_head", False):
+        raise ValueError("A metric-task cross-entropy baseline must set classification_head=true")
     return config
 
 
@@ -458,6 +673,7 @@ def run(
             train_classes,
             gamma=sampler_config.get("apm_gamma", 1.0),
             smoothing=sampler_config.get("apm_smoothing", 0.0),
+            ema=sampler_config.get("apm_ema", 0.9),
             unobserved_floor=sampler_config.get("apm_unobserved_floor", 0.01),
         )
     sampler = PKBatchSampler(
@@ -491,6 +707,8 @@ def run(
         image_channels=int(config["model"].get("image_channels", 3)),
         image_mean=config["model"].get("image_mean"),
         image_std=config["model"].get("image_std"),
+        background_labels=train_classes if catalog.modality == "kor_synthetic" else None,
+        background_seed=config["seed"] if catalog.modality == "kor_synthetic" else None,
     )
     test_catalog = catalog
     test_sample_dataset = evaluation_dataset
@@ -545,6 +763,8 @@ def run(
             image_channels=int(test_model_config.get("image_channels", 3)),
             image_mean=test_model_config.get("image_mean"),
             image_std=test_model_config.get("image_std"),
+            background_labels=train_classes if test_catalog.modality == "kor_synthetic" else None,
+            background_seed=config["seed"] if test_catalog.modality == "kor_synthetic" else None,
         )
     if config.get("test", {}).get("task") == "classification":
         test_cfg = config["test"]
@@ -576,7 +796,7 @@ def run(
     if catalog.modality == "image" and config["hardware"].get("channels_last", True):
         model = model.to(memory_format=torch.channels_last)
     classifier = None
-    if config["task"] == "classification":
+    if config["task"] == "classification" or config.get("classification_head", False):
         classifier = nn.Linear(model.output_dim, len(train_classes)).to(device)
     loss_name, objective = _make_objective(config, len(train_classes), model.output_dim, device)
     optimizer_parameters = list(model.parameters())
@@ -687,7 +907,7 @@ def run(
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
                 embeddings = _forward(model, batch, catalog.modality, tokenizer, device, int(config["model"].get("max_length", 128)))
-                if config["task"] == "classification":
+                if loss_name == "cross_entropy":
                     local_targets = torch.tensor([train_label_ids[name] for name in batch["class_name"]], device=device)
                     logits = classifier(embeddings.float())
                     loss = nn.functional.cross_entropy(logits, local_targets)
@@ -743,7 +963,11 @@ def run(
         validation_cfg = config.get("validation")
         eval_interval = int(validation_cfg.get("every_n_epochs", 1)) if validation_cfg else 1
         validation_due = validation_cfg is not None and ((epoch + 1) % max(1, eval_interval) == 0 or epoch == int(train_cfg.get("epochs", 10)) - 1)
-        validation = _run_evaluation(config, "validation", catalog, model, classifier, evaluation_dataset, tokenizer, device, train_classes, protocol_config, output_dir) if validation_due else {}
+        validation = _run_evaluation(
+            config, "validation", catalog, model, classifier, evaluation_dataset,
+            tokenizer, device, train_classes, protocol_config, output_dir,
+            gallery_catalog=catalog, gallery_sample_dataset=evaluation_dataset,
+        ) if validation_due else {}
         if "confidence_threshold" in validation and config.get("validation") is not None:
             config["validation"]["calibrated_threshold"] = validation["confidence_threshold"]
         row["validation"] = validation
@@ -796,7 +1020,11 @@ def run(
             objective.load_state_dict(best_state["objective"])
         if best_state.get("validation", {}).get("confidence_threshold") is not None and config.get("validation") is not None:
             config["validation"]["calibrated_threshold"] = best_state["validation"]["confidence_threshold"]
-        test_metrics = _run_evaluation(config, "test", test_catalog, model, classifier, test_sample_dataset, tokenizer, device, train_classes, test_protocol_manifest, output_dir)
+        test_metrics = _run_evaluation(
+            config, "test", test_catalog, model, classifier, test_sample_dataset,
+            tokenizer, device, train_classes, test_protocol_manifest, output_dir,
+            gallery_catalog=catalog, gallery_sample_dataset=evaluation_dataset,
+        )
         (output_dir / "test_metrics.json").write_text(json.dumps(test_metrics, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"test": test_metrics}, ensure_ascii=False))
 

@@ -136,10 +136,9 @@ python scripts/launch_experiment.py \
 | `phd08` | `/home/arseniy/data/PHD08_dataset` |
 | `kor_synthetic` | `/home/arseniy/data/kor_synthetic` |
 
-P5 (`phd08_synthetic_2350` и `phd08_synthetic_full`) автоматически использует
-KorSynthetic для обучения и PHD08 для итоговой оценки. Включи её флагом
-`--run-test`. Если данные на вычислительном узле находятся в других местах,
-задай их через `--data-root`, а для P5 также через `--eval-data-root`.
+P5 автоматически использует KorSynthetic для обучения и PHD08 для итоговой
+оценки. Если данные на вычислительном узле находятся в других местах, задай их
+через `--data-root`, а для P5 также через `--eval-data-root`.
 
 Полезные общие параметры:
 
@@ -160,11 +159,105 @@ KorSynthetic для обучения и PHD08 для итоговой оценк
 
 ## Границы реализованной части планов
 
-Текущие конфиги запускают классификацию, поиск похожих объектов, эпизодическую
-классификацию новых классов, распознавание неизвестных намерений CLINC и перенос
-P5. При этом они охватывают не все расширенные проверки отдельных компонентов и
-базовые методы из `EXPERIMENT_PLAN_*.md`. Для PHD08 пока нельзя подтвердить,
-что обучающие, проверочные и итоговые данные происходят из разных источников или
-шрифтов: в наборах нет соответствующих идентификаторов. Точный официальный
-протокол Omniglot O5 также не подтверждён. Не используй результаты итоговой
-оценки для подбора гиперпараметров.
+Текущая основная PHD08-матрица соответствует восьми сравнениям из плана. Более
+широкие baseline-строки и абляции из раздела 6 плана (PFML, Proxy-AN,
+обучаемый ProtoNet и другие селекторы) пока не добавлены. PHD08 split исключает
+пересечение восстановленных по именам файлов групп; font-disjoint проверка не
+проводится. Точный официальный протокол Omniglot O5 также не подтверждён. Не
+используй результаты итоговой оценки для подбора гиперпараметров.
+
+## Матрицы PHD08
+
+### P1/P2: известные классы, полный и ограниченный бюджет
+
+Пять seeds × восемь строк × три бюджета дают 120 обучений. Четыре строки CATML
+сравнивают Random, APM, Auto-clustering и их совместный режим; три строки
+Triplet — Random, Semi-hard и Batch-hard; Cross-entropy служит отдельным
+классификационным baseline. Для P2 бюджеты 5 и 10 выбирают фиксированные
+представители разных filename-derived групп; 5 вложен в 10.
+
+```bash
+python scripts/launch_experiment.py \
+  --config phd08_metric_closed_dev \
+  --cross-entropy-config phd08_classification \
+  --phd08-baseline \
+  --models-dir "$MODEL_DIR" \
+  --seeds 1,2,3,4,5 \
+  --examples-per-class all,5,10 \
+  --run-test \
+  --output-dir experiments/jobs/phd08_p1p2
+```
+
+### P3: retrieval новых классов
+
+Итоговая матрица обучается на 1 880 train+validation классах без выбора по test,
+затем оценивает Recall@K на 470 отложенных классах. Запусти 40 обучений:
+
+```bash
+python scripts/launch_experiment.py \
+  --config phd08_metric_dev \
+  --cross-entropy-config phd08_metric_ce_dev \
+  --phd08-baseline \
+  --models-dir "$MODEL_DIR" \
+  --seeds 1,2,3,4,5 \
+  --stage final \
+  --run-test \
+  --output-dir experiments/jobs/phd08_p3
+```
+
+Cross-entropy здесь обучает классификационную голову на train-классах, но при
+итоговой оценке голова не используется: сравниваются эмбеддинги, как у остальных
+строк.
+
+### P4: 1-shot и 5-shot на checkpoint P3
+
+P4 не обучает отдельную сеть. Для каждого выбранного P3 checkpoint запускай две
+оценки. Например, для одного CATML seed 1:
+
+```bash
+P3_RUN=experiments/jobs/phd08_p3/runs/phd08_final_catml_random_all_seed1
+python scripts/launch_experiment.py \
+  --config phd08_fewshot_final_k1 --models-dir "$MODEL_DIR" \
+  --checkpoint "$P3_RUN/last.pt" --split test \
+  --output experiments/jobs/phd08_p4/catml_random_seed1_k1.json
+python scripts/launch_experiment.py \
+  --config phd08_fewshot_final_k5 --models-dir "$MODEL_DIR" \
+  --checkpoint "$P3_RUN/last.pt" --split test \
+  --output experiments/jobs/phd08_p4/catml_random_seed1_k5.json
+```
+
+Замени путь `P3_RUN` на соответствующий метод и seed. Валидационные эпизоды
+используются для настройки, test-эпизоды — только в итоговом отчёте. Сохраняются
+точные IDs изображений каждого эпизода.
+
+### P5: KorSynthetic → PHD08
+
+Каждая из двух команд ниже создаёт по 40 обучений: две конфигурации алфавита ×
+восемь строк × пять seeds. В PHD08-классификации рассматриваются все 11 172
+обучающих класса в режиме `full`; галерея ближайшего эталона содержит один
+детерминированный синтетический train-образец на класс. Для выбора checkpoint
+используются 10 детерминированных validation-примеров на класс; основная
+метрика выбора — точность ближайшего эталона для всех строк. Для внешнего
+датасета используются стандартные корни из таблицы выше; при необходимости
+добавь `--eval-data-root`.
+
+```bash
+python scripts/launch_experiment.py \
+  --config phd08_synthetic_metric_2350 \
+  --cross-entropy-config phd08_synthetic_2350 \
+  --phd08-baseline --models-dir "$MODEL_DIR" \
+  --seeds 1,2,3,4,5 --run-test \
+  --output-dir experiments/jobs/phd08_p5_2350
+
+python scripts/launch_experiment.py \
+  --config phd08_synthetic_metric_full \
+  --cross-entropy-config phd08_synthetic_full \
+  --phd08-baseline --models-dir "$MODEL_DIR" \
+  --seeds 1,2,3,4,5 --run-test \
+  --output-dir experiments/jobs/phd08_p5_full
+```
+
+В строке Cross-entropy итоговый отчёт содержит logits/accuracy и
+nearest-exemplar метрики; в метрических строках выводятся nearest-exemplar и
+nearest-centroid. Для `full` множество допустимых ответов — все 11 172
+обучающих символа; тестовые изображения относятся только к 2 350 классам PHD08.

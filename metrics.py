@@ -28,6 +28,7 @@ def compute_similarity(embed1, embed2):
 # the same module as the legacy pair-verification metric.
 from experiment_metrics import (  # noqa: E402
     classification_metrics,
+    embedding_classification_metrics,
     equal_error_rate,
     open_set_metrics,
     retrieval_metrics,

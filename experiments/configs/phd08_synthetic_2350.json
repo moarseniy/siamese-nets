@@ -3,6 +3,7 @@
   "manifest": "../manifests/kor_synthetic.json",
   "protocol": "phd08_2350",
   "catalog_protocol": "kor_synthetic_synthetic_train",
+  "catalog_protocol": "kor_synthetic_synthetic_train",
   "train_class_key": "classes",
   "task": "classification",
   "seed": 20261113,
@@ -10,9 +11,9 @@
   "loss": {"type": "cross_entropy"},
   "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 256, "samples_per_class": 16},
   "training": {"epochs": 20, "steps_per_epoch": 500, "train_split": "train", "learning_rate": 0.001, "weight_decay": 0.0},
-  "validation": {"task": "classification", "split": "valid", "primary_metric": "accuracy"},
+  "validation": {"task": "classification", "split": "valid", "max_examples_per_class": 10, "primary_metric": "nearest_exemplar_accuracy", "embedding_metrics": true, "gallery_split": "train", "gallery_examples_per_class": 1, "distance": "euclidean", "embedding_transform": "softplus"},
   "evaluation_dataset": {"dataset": "phd08", "manifest": "../manifests/phd08.json", "protocol": "p5_synthetic_transfer", "alphabet_from_training_dataset": true, "preprocessing": {"image_size": 37, "image_channels": 1}},
-  "test": {"task": "classification", "class_key": "classes", "catalog_protocol": "phd08_crossdomain", "split": "all", "checkpoint": "last"},
+  "test": {"task": "classification", "class_key": "classes", "answer_class_key": "classes", "catalog_protocol": "phd08_crossdomain", "split": "all", "checkpoint": "best", "embedding_metrics": true, "gallery_source": "training_dataset", "gallery_split": "train", "gallery_examples_per_class": 1, "query_split": "all", "distance": "euclidean", "embedding_transform": "softplus"},
   "evaluation": {"batch_size": 4096},
   "hardware": {"device": 0, "precision": "bf16", "channels_last": true, "num_workers": 12, "prefetch_factor": 4}
 }

@@ -1,0 +1,18 @@
+{
+  "dataset": "phd08",
+  "manifest": "../manifests/phd08.json",
+  "protocol": "class_disjoint_retrieval",
+  "catalog_protocol": "phd08_class_disjoint",
+  "train_class_key": "train_classes",
+  "task": "metric",
+  "classification_head": true,
+  "seed": 20261113,
+  "model": {"modality": "image", "backbone": "kornet2", "pretrained": false, "embedding_dim": 25, "normalize": false, "image_size": 37, "image_channels": 1},
+  "loss": {"type": "cross_entropy"},
+  "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 256, "samples_per_class": 16},
+  "training": {"epochs": 20, "steps_per_epoch": 500, "train_split": "train", "learning_rate": 0.001, "weight_decay": 0.0},
+  "validation": {"task": "retrieval", "class_key": "validation_classes", "catalog_protocol": "phd08_class_disjoint", "gallery_split": "gallery", "query_split": "query", "ks": [1, 2, 4, 8], "every_n_epochs": 5, "primary_metric": "recall@1", "distance": "euclidean", "embedding_transform": "softplus"},
+  "test": {"task": "retrieval", "class_key": "test_classes", "catalog_protocol": "phd08_class_disjoint", "gallery_split": "gallery", "query_split": "query", "ks": [1, 2, 4, 8], "checkpoint": "best", "distance": "euclidean", "embedding_transform": "softplus"},
+  "evaluation": {"batch_size": 4096, "query_chunk_size": 128, "distance": "euclidean", "embedding_transform": "softplus"},
+  "hardware": {"device": 0, "precision": "bf16", "channels_last": true, "num_workers": 12, "prefetch_factor": 4}
+}

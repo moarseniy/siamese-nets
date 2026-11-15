@@ -17,6 +17,102 @@ def classification_metrics(y_true, y_pred) -> dict[str, float]:
     }
 
 
+def _metric_vectors(values: torch.Tensor, embedding_transform: str, distance: str) -> torch.Tensor:
+    if embedding_transform == "softplus":
+        values = F.softplus(values.float())
+    elif embedding_transform == "identity":
+        values = values.float()
+    else:
+        raise ValueError("embedding_transform must be 'identity' or 'softplus'")
+    if distance == "cosine":
+        return F.normalize(values, dim=1)
+    if distance == "euclidean":
+        return values
+    raise ValueError("distance must be 'cosine' or 'euclidean'")
+
+
+def _similarity_scores(queries: torch.Tensor, references: torch.Tensor, distance: str) -> torch.Tensor:
+    if distance == "cosine":
+        return queries @ references.T
+    query_norm = queries.square().sum(dim=1, keepdim=True)
+    reference_norm = references.square().sum(dim=1).unsqueeze(0)
+    return -(query_norm + reference_norm - 2.0 * (queries @ references.T)).clamp_min_(0.0)
+
+
+def _classification_summary(true_count: torch.Tensor, predicted_count: torch.Tensor, true_positive: torch.Tensor) -> tuple[float, float]:
+    total = true_count.sum()
+    if total.item() == 0:
+        raise ValueError("Embedding classification produced no queries")
+    denominator = true_count + predicted_count
+    included = denominator > 0
+    class_f1 = 2.0 * true_positive[included].float() / denominator[included].float()
+    accuracy = float((true_positive.sum().float() / total).item())
+    return accuracy, float(class_f1.mean().item())
+
+
+@torch.no_grad()
+def embedding_classification_metrics(
+    query_embeddings: torch.Tensor,
+    query_labels: torch.Tensor,
+    gallery_embeddings: torch.Tensor,
+    gallery_labels: torch.Tensor,
+    *,
+    num_classes: int,
+    distance: str = "cosine",
+    embedding_transform: str = "identity",
+    query_chunk_size: int = 128,
+) -> dict[str, float]:
+    """Closed-set accuracy using a fixed gallery: nearest exemplar and centroid."""
+    q = _metric_vectors(query_embeddings, embedding_transform, distance)
+    g = _metric_vectors(gallery_embeddings, embedding_transform, distance).to(q.device)
+    q_labels = query_labels.to(q.device).long()
+    g_labels = gallery_labels.to(q.device).long()
+    if not len(q) or not len(g):
+        raise ValueError("Embedding classification needs nonempty query and gallery sets")
+    if (g_labels.min() < 0 or g_labels.max() >= num_classes or
+            q_labels.min() < 0 or q_labels.max() >= num_classes):
+        raise ValueError("Embedding classification labels are outside the configured class range")
+
+    counts = torch.bincount(g_labels, minlength=num_classes)
+    if (counts == 0).any():
+        missing = torch.where(counts == 0)[0].cpu().tolist()
+        raise ValueError(f"Gallery is missing training classes; first missing IDs: {missing[:5]}")
+    center_sums = g.new_zeros((num_classes, g.shape[1]))
+    center_sums.index_add_(0, g_labels, g)
+    centers = center_sums / counts.to(g.dtype).unsqueeze(1)
+    if distance == "cosine":
+        centers = F.normalize(centers, dim=1)
+
+    true_count = torch.bincount(q_labels, minlength=num_classes)
+    exemplar_predicted = torch.zeros(num_classes, device=q.device, dtype=torch.long)
+    exemplar_true_positive = torch.zeros_like(exemplar_predicted)
+    center_predicted = torch.zeros_like(exemplar_predicted)
+    center_true_positive = torch.zeros_like(exemplar_predicted)
+    for start in range(0, len(q), query_chunk_size):
+        stop = min(len(q), start + query_chunk_size)
+        query_chunk = q[start:stop]
+        exemplar_scores = _similarity_scores(query_chunk, g, distance)
+        exemplar_predictions = g_labels[exemplar_scores.argmax(dim=1)]
+        center_scores = _similarity_scores(query_chunk, centers, distance)
+        center_predictions = center_scores.argmax(dim=1)
+        truth = q_labels[start:stop]
+        exemplar_predicted += torch.bincount(exemplar_predictions, minlength=num_classes)
+        exemplar_true_positive += torch.bincount(exemplar_predictions[exemplar_predictions == truth], minlength=num_classes)
+        center_predicted += torch.bincount(center_predictions, minlength=num_classes)
+        center_true_positive += torch.bincount(center_predictions[center_predictions == truth], minlength=num_classes)
+
+    exemplar_accuracy, exemplar_f1 = _classification_summary(true_count, exemplar_predicted, exemplar_true_positive)
+    center_accuracy, center_f1 = _classification_summary(true_count, center_predicted, center_true_positive)
+    return {
+        "nearest_exemplar_accuracy": exemplar_accuracy,
+        "nearest_exemplar_macro_f1": exemplar_f1,
+        "nearest_centroid_accuracy": center_accuracy,
+        "nearest_centroid_macro_f1": center_f1,
+        "queries": float(len(q)),
+        "gallery": float(len(g)),
+    }
+
+
 @torch.no_grad()
 def retrieval_metrics(
     query_embeddings: torch.Tensor,
@@ -28,10 +124,12 @@ def retrieval_metrics(
     gallery_ids: list[str] | None = None,
     ks: tuple[int, ...] = (1, 2, 4, 8),
     query_chunk_size: int = 128,
+    distance: str = "cosine",
+    embedding_transform: str = "identity",
 ) -> dict[str, float]:
     """Compute Recall@K and MAP@R without materializing the full Q x G matrix."""
-    q = F.normalize(query_embeddings.float(), dim=1)
-    g = F.normalize(gallery_embeddings.float(), dim=1).to(q.device)
+    q = _metric_vectors(query_embeddings, embedding_transform, distance)
+    g = _metric_vectors(gallery_embeddings, embedding_transform, distance).to(q.device)
     q_labels = query_labels.to(q.device).long()
     g_labels = gallery_labels.to(q.device).long()
     if not len(q) or not len(g):
@@ -57,7 +155,7 @@ def retrieval_metrics(
     valid_queries = 0
     for start in range(0, len(q), query_chunk_size):
         stop = min(len(q), start + query_chunk_size)
-        scores = q[start:stop] @ g.T
+        scores = _similarity_scores(q[start:stop], g, distance)
         if same_ids is not None:
             for local_index, uid in enumerate(query_ids[start:stop]):
                 for gallery_index in same_ids.get(uid, ()):

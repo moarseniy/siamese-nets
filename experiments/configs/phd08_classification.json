@@ -10,8 +10,8 @@
   "loss": {"type": "cross_entropy"},
   "sampler": {"positive": "random", "negative": "random", "classes_per_batch": 256, "samples_per_class": 16},
   "training": {"epochs": 20, "steps_per_epoch": 750, "train_split": "train", "learning_rate": 0.001, "weight_decay": 0.0},
-  "validation": {"task": "classification", "split": "valid", "every_n_epochs": 5, "primary_metric": "accuracy"},
-  "test": {"task": "classification", "split": "test", "checkpoint": "best"},
-  "evaluation": {"batch_size": 4096},
+  "validation": {"task": "classification", "split": "valid", "every_n_epochs": 5, "primary_metric": "nearest_exemplar_accuracy", "embedding_metrics": true, "gallery_split": "train", "distance": "euclidean", "embedding_transform": "softplus"},
+  "test": {"task": "classification", "split": "test", "checkpoint": "best", "embedding_metrics": true, "gallery_split": "train", "distance": "euclidean", "embedding_transform": "softplus"},
+  "evaluation": {"batch_size": 4096, "query_chunk_size": 128, "distance": "euclidean", "embedding_transform": "softplus"},
   "hardware": {"device": 0, "precision": "bf16", "channels_last": true, "num_workers": 12, "prefetch_factor": 4}
 }

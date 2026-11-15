@@ -116,6 +116,7 @@ if __name__ == "__main__":
     parser.add_argument('--models-dir', type=str, help='Root containing local pretrained model folders and TorchVision weights')
     parser.add_argument('--output', type=str, help='Run output directory for manifest experiment configs')
     parser.add_argument('--resume', type=str, help='Checkpoint to resume from')
+    parser.add_argument('--checkpoint', type=str, help='Repository checkpoint to evaluate without training')
     parser.add_argument('--run-test', action='store_true', help='Evaluate the fixed test protocol after training')
     parser.add_argument('--evaluate-pretrained', action='store_true', help='Evaluate a pretrained/frozen encoder without training')
     parser.add_argument('--split', choices=('validation', 'test'), default='validation')
@@ -140,9 +141,11 @@ if __name__ == "__main__":
             output_path = args.output or str(Path('experiments') / 'runs' / config_path.stem / f"{args.split}.json")
             evaluate_pretrained_experiment(
                 config_path, data_root, output_path, args.split,
-                args.calibrate_with_validation, args.models_dir,
+                args.calibrate_with_validation, args.models_dir, args.checkpoint,
             )
             raise SystemExit(0)
+        if args.checkpoint:
+            parser.error('--checkpoint requires --evaluate-pretrained')
         output_dir = args.output or str(Path('experiments') / 'runs' / config_path.stem / f"seed{raw_config.get('seed', 20261113)}")
         run_experiment_training(
             config_path, data_root, output_dir, args.resume, args.run_test,
@@ -150,7 +153,7 @@ if __name__ == "__main__":
         )
         raise SystemExit(0)
 
-    if args.run_test or args.evaluate_pretrained or args.calibrate_with_validation or args.split != 'validation' or args.eval_data_root:
+    if args.run_test or args.evaluate_pretrained or args.calibrate_with_validation or args.split != 'validation' or args.eval_data_root or args.checkpoint:
         parser.error('these options are available only for manifest experiment configs')
     cfg = normalize_config(raw_config)
     if args.resume:

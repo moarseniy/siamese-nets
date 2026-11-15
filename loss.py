@@ -73,7 +73,7 @@ class MetricLoss(nn.Module):
 from experiment_losses import (  # noqa: E402
     CATMLLoss,
     ProxyAnchorLoss,
-    multi_negative_ranking,
+    multiple_negatives_ranking as multi_negative_ranking,
     multi_similarity,
     pair_contrastive,
     supervised_contrastive,

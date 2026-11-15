@@ -5,7 +5,8 @@
   "counts": {
     "classes": 2350,
     "expected_images_per_class": 2187,
-    "expected_total_images": 5139450
+    "expected_total_images": 5139450,
+    "observed_total_images": 5139450
   },
   "catalog_labels_sha256": "5fb33b5dbd6c81bfb7a6561fda51ce8360b23518a4c906b2ad62c817c2ed6803",
   "class_names_sha256": "3396dd24ad755b24021efac56f4b4a424a37c02b51bd3a65380ac1b03f971cc2",
@@ -2364,7 +2365,7 @@
         "11181",
         "11183"
       ],
-      "sample_split": "stable_hash(uid, seed) into 60/20/20; not source-disjoint"
+      "sample_split": "deterministic 60/20/20 split by filename-derived source family; not font-disjoint"
     },
     "class_disjoint_retrieval": {
       "train_classes": [
@@ -6606,7 +6607,9 @@
         "9994"
       ],
       "source_disjoint": false,
-      "note": "Source/family metadata must be supplied separately before claiming source-disjoint evaluation."
+      "within_class_family_split": "gallery/query use disjoint filename-derived families",
+      "font_disjoint": false,
+      "note": "Class split is disjoint; whole-font generalization is a separate protocol."
     },
     "p5_synthetic_transfer": {
       "classes": [
@@ -8965,8 +8968,24 @@
     }
   },
   "integrity": {
-    "full_image_scan_performed": false,
-    "source_family_metadata": "unknown",
+    "full_image_scan_performed": true,
+    "source_family_metadata": "filename-derived family pattern verified in every class",
+    "images_per_class_distribution": {
+      "2187": 2350
+    },
+    "filename_family_audit": {
+      "rule": "class folder + first four underscore-separated filename fields",
+      "groups_per_class_distribution": {
+        "243": 2350
+      },
+      "variants_per_family_distribution": {
+        "9": 571050
+      },
+      "expected_groups_per_class": 243,
+      "expected_variants_per_family": 9,
+      "verified": true,
+      "errors": []
+    },
     "kor_synthetic_alignment": {
       "method": "folder index -> kor_101_mfcr alphabet at the same position",
       "p5_class_count": 2350,

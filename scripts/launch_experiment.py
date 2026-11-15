@@ -79,6 +79,8 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seeds", help="Comma-separated seeds; starts a matrix")
     parser.add_argument("--losses", help="Comma-separated objectives; starts a matrix")
     parser.add_argument("--selectors", help="Comma-separated selectors; starts a matrix")
+    parser.add_argument("--phd08-baseline", action="store_true", help="Run the fixed eight-row PHD08 baseline matrix")
+    parser.add_argument("--cross-entropy-config", help="Cross-entropy base config used by --phd08-baseline")
     parser.add_argument("--examples-per-class", help="Comma-separated budgets such as all,5,10")
     parser.add_argument("--k-shot", type=int, help="Few-shot K override")
     parser.add_argument("--epochs", type=int, help="Epoch override for a pilot/matrix")
@@ -88,6 +90,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--resume", type=Path, help="Resume one run from a checkpoint")
     parser.add_argument("--split", choices=("validation", "test"), default="validation", help="Split for inference-only configs")
     parser.add_argument("--calibrate-with-validation", action="store_true", help="Calibrate an open-set threshold before test")
+    parser.add_argument("--checkpoint", type=Path, help="Evaluate a saved experiment checkpoint without training")
     parser.add_argument("--dry-run", action="store_true", help="Prepare/print launch commands without training")
 
 
@@ -122,6 +125,7 @@ def main() -> None:
         args.seeds is not None,
         args.losses is not None,
         args.selectors is not None,
+        args.phd08_baseline,
         args.examples_per_class is not None,
         args.k_shot is not None,
         args.epochs is not None,
@@ -142,10 +146,18 @@ def main() -> None:
         parser.error("inference-only configs use --split test, not --run-test")
     if inference_only and args.resume is not None:
         parser.error("inference-only configs do not use checkpoints")
+    if args.checkpoint is not None and not inference_only:
+        parser.error("--checkpoint evaluation requires an inference-only config")
     if not inference_only and args.split != "validation":
         parser.error("--split is only for inference-only configs; use --run-test after training")
     if args.calibrate_with_validation and (not inference_only or args.split != "test"):
         parser.error("--calibrate-with-validation requires an inference-only config with --split test")
+    if args.cross_entropy_config and not args.phd08_baseline:
+        parser.error("--cross-entropy-config requires --phd08-baseline")
+    if args.phd08_baseline and inference_only:
+        parser.error("--phd08-baseline creates training jobs, not inference-only evaluations")
+    if args.phd08_baseline and (args.losses is not None or args.selectors is not None):
+        parser.error("--phd08-baseline defines its own loss/selector rows; omit --losses and --selectors")
     if args.run_test and not inference_only and not config.get("test") and args.stage != "final":
         parser.error("this config has no test section; use --stage final for class-disjoint retrieval")
     if args.stage == "final" and config.get("validation", {}).get("task") != "retrieval":
@@ -171,6 +183,14 @@ def main() -> None:
             "--examples-per-class", budget_values,
             "--stage", default_stage,
         ]
+        if args.phd08_baseline:
+            if not args.cross_entropy_config:
+                parser.error("--cross-entropy-config is required with --phd08-baseline")
+            cross_entropy_path = _config_path(args.cross_entropy_config)
+            cross_entropy_config = json.loads(cross_entropy_path.read_text(encoding="utf-8"))
+            if cross_entropy_config.get("dataset") != config.get("dataset"):
+                parser.error("PHD08 baseline configs must use the same training dataset")
+            command.extend(("--phd08-baseline", "--cross-entropy-config", str(cross_entropy_path)))
         if eval_data_root is not None:
             command.extend(("--eval-data-root", str(eval_data_root)))
         if args.epochs is not None:
@@ -206,6 +226,8 @@ def main() -> None:
         ]
         if args.calibrate_with_validation:
             command.append("--calibrate-with-validation")
+        if args.checkpoint is not None:
+            command.extend(("--checkpoint", str(_repo_path(args.checkpoint))))
     else:
         seed = int(config.get("seed", 20261113))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

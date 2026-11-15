@@ -456,7 +456,7 @@ def run_experiment_training(config_path, data_root, output_dir, resume=None, run
     )
 
 
-def evaluate_pretrained_experiment(config_path, data_root, output_path, split="validation", calibrate_with_validation=False, models_dir=None):
+def evaluate_pretrained_experiment(config_path, data_root, output_path, split="validation", calibrate_with_validation=False, models_dir=None, checkpoint=None):
     """Evaluate a frozen/pretrained encoder through the repository API."""
     from pathlib import Path
     from experiment_evaluate_pretrained import evaluate
@@ -464,6 +464,7 @@ def evaluate_pretrained_experiment(config_path, data_root, output_path, split="v
     return evaluate(
         Path(config_path), Path(data_root), Path(output_path),
         split, bool(calibrate_with_validation), Path(models_dir) if models_dir is not None else None,
+        Path(checkpoint) if checkpoint is not None else None,
     )
 
 
