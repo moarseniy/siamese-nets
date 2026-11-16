@@ -8,7 +8,9 @@ float32 background/mask arrays are preserved; no rendered image is substituted.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -17,6 +19,7 @@ from typing import Iterable
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from PIL import Image
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -24,8 +27,9 @@ from phd08_protocol import phd08_family_id
 
 
 FORMAT = "siamese-nets-parquet-v1"
-DEFAULT_ROWS_PER_SHARD = 1_000
+DEFAULT_ROWS_PER_SHARD = 5_000
 DEFAULT_ROW_GROUP_SIZE = 100
+DEFAULT_WORKERS = max(1, min(8, os.cpu_count() or 1))
 STATE_DIRNAME = ".conversion_state"
 
 
@@ -98,7 +102,7 @@ def _bucket_path(output: Path, class_index: int) -> Path:
     return output / "data" / f"{class_index // 1000:02d}"
 
 
-def _pyarrow_schema(dataset: str) -> pa.Schema:
+def _pyarrow_schema(dataset: str, preview_images: bool = False) -> pa.Schema:
     common = [
         pa.field("class_index", pa.int32(), nullable=False),
         pa.field("symbol", pa.string(), nullable=False),
@@ -114,25 +118,25 @@ def _pyarrow_schema(dataset: str) -> pa.Schema:
                 pa.field("path", pa.string(), nullable=False),
             ]), nullable=False),
         ])
-    matrix = pa.list_(pa.list_(pa.float32(), 37), 37)
-    return pa.schema(common + [
-        pa.field("background", matrix, nullable=False),
-        pa.field("mask", matrix, nullable=False),
-        pa.field("background_shape", pa.list_(pa.int16(), 3), nullable=False),
-        pa.field("mask_shape", pa.list_(pa.int16(), 3), nullable=False),
+    array = pa.list_(pa.float32(), 37 * 37)
+    kor_fields = [
+        pa.field("background", array, nullable=False),
+        pa.field("mask", array, nullable=False),
+        pa.field("shape", pa.list_(pa.int16(), 3), nullable=False),
         pa.field("background_record", pa.string(), nullable=False),
         pa.field("mask_record", pa.string(), nullable=False),
-        pa.field("metadata_record", pa.string(), nullable=False),
-        pa.field("metadata_shape", pa.list_(pa.int16(), 3), nullable=False),
         pa.field("markup_source", pa.float32(), nullable=False),
-        pa.field("symbol_record", pa.string(), nullable=False),
-        pa.field("symbol_shape", pa.list_(pa.int16(), 3), nullable=False),
-        pa.field("symbol_value", pa.float32(), nullable=False),
         pa.field("symbol_index", pa.int32(), nullable=False),
-    ])
+    ]
+    if preview_images:
+        kor_fields.append(pa.field("preview_image", pa.struct([
+            pa.field("bytes", pa.binary(), nullable=False),
+            pa.field("path", pa.string(), nullable=False),
+        ]), nullable=False))
+    return pa.schema(common + kor_fields)
 
 
-def _kor_row(class_index: int, symbol: str, path: Path) -> dict:
+def _kor_row(class_index: int, symbol: str, path: Path, preview_images: bool) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if len(payload) < 4:
         raise ValueError(f"KorSynthetic sample has fewer than four records: {path}")
@@ -148,24 +152,61 @@ def _kor_row(class_index: int, symbol: str, path: Path) -> dict:
     if len(markup.get("data", [])) != 1:
         raise ValueError(f"Unexpected KorSynthetic metadata record in {path}")
     markup_value = float(markup["data"][0])
-    return {
+    row = {
         "class_index": class_index,
         "symbol": symbol,
         "filename": path.name,
-        "background": [[float(value) for value in background["data"][start:start + 37]] for start in range(0, 1369, 37)],
-        "mask": [[float(value) for value in mask["data"][start:start + 37]] for start in range(0, 1369, 37)],
-        "background_shape": [int(value) for value in background["shape"]],
-        "mask_shape": [int(value) for value in mask["shape"]],
+        "background": [float(value) for value in background["data"]],
+        "mask": [float(value) for value in mask["data"]],
+        "shape": [int(value) for value in background["shape"]],
         "background_record": background["label"],
         "mask_record": mask["label"],
-        "metadata_record": markup["label"],
-        "metadata_shape": [int(value) for value in markup["shape"]],
         "markup_source": markup_value,
-        "symbol_record": symbol_record["label"],
-        "symbol_shape": [int(value) for value in symbol_record["shape"]],
-        "symbol_value": float(symbol_record["data"][0]),
         "symbol_index": symbol_index,
     }
+    if preview_images:
+        pixels = [
+            max(0, min(255, round(float(bg) * float(mask_value) * 255)))
+            for bg, mask_value in zip(background["data"], mask["data"])
+        ]
+        image = Image.new("L", (37, 37))
+        image.putdata(pixels)
+        encoded = io.BytesIO()
+        image.save(encoded, format="PNG")
+        row["preview_image"] = {"bytes": encoded.getvalue(), "path": path.name + ".preview.png"}
+    return row
+
+
+def _kor_hf_features(preview_images: bool) -> str:
+    preview = '''  - name: preview_image
+    dtype: image
+''' if preview_images else ""
+    return f'''dataset_info:
+  features:
+  - name: class_index
+    dtype: int32
+  - name: symbol
+    dtype: string
+  - name: filename
+    dtype: string
+  - name: background
+    list: float32
+    length: 1369
+  - name: mask
+    list: float32
+    length: 1369
+  - name: shape
+    list: int16
+    length: 3
+  - name: background_record
+    dtype: string
+  - name: mask_record
+    dtype: string
+  - name: markup_source
+    dtype: float32
+  - name: symbol_index
+    dtype: int32
+{preview}'''
 
 
 def _phd_row(class_index: int, symbol: str, path: Path) -> dict:
@@ -208,7 +249,8 @@ def _convert_class(
     row_group_size: int,
     compression: str,
     resume: bool,
-) -> list[str]:
+    preview_images: bool,
+) -> tuple[list[str], int]:
     class_index = int(class_dir.name)
     files = _source_files(dataset, class_dir)
     if not files:
@@ -228,7 +270,7 @@ def _convert_class(
     bucket.mkdir(parents=True, exist_ok=True)
     existing = {path.name: path for path in _class_output_files(output, class_index)}
     written = []
-    schema = _pyarrow_schema(dataset)
+    schema = _pyarrow_schema(dataset, preview_images)
     for part, start in enumerate(range(0, len(files), rows_per_shard)):
         if len(files) > rows_per_shard * 10 and part % 100 == 0:
             print(f"  class {class_index}: shard {part + 1}/{(len(files) + rows_per_shard - 1) // rows_per_shard}", flush=True)
@@ -243,7 +285,7 @@ def _convert_class(
             written.append(str(final_path.relative_to(output)))
             continue
         rows = [
-            _phd_row(class_index, symbol, path) if dataset == "phd08" else _kor_row(class_index, symbol, path)
+            _phd_row(class_index, symbol, path) if dataset == "phd08" else _kor_row(class_index, symbol, path, preview_images)
             for path in part_files
         ]
         table = pa.Table.from_pylist(rows, schema=schema)
@@ -260,10 +302,20 @@ def _convert_class(
     unexpected = set(existing) - {Path(item).name for item in written}
     if unexpected:
         raise ValueError(f"Unexpected stale shards for class {class_index}: {sorted(unexpected)[:3]}")
-    return written
+    return written, len(files)
 
 
-def _write_readme(output: Path, dataset: str) -> None:
+def _convert_class_worker(task: tuple) -> tuple[int, list[str], int]:
+    dataset, class_dir, symbol, output, rows_per_shard, row_group_size, compression, resume, preview_images = task
+    class_dir = Path(class_dir)
+    files, row_count = _convert_class(
+        dataset, class_dir, symbol, Path(output), rows_per_shard,
+        row_group_size, compression, resume, preview_images,
+    )
+    return int(class_dir.name), files, row_count
+
+
+def _write_readme(output: Path, dataset: str, preview_images: bool = False) -> None:
     config_name = "PHD08" if dataset == "phd08" else "KorSynthetic"
     if dataset == "phd08":
         description = '''Each row stores one source PNG. `class_index` is the original numeric folder name; `symbol` is its position in the supplied KorSynthetic alphabet. `family_id` follows the repository rule: class folder plus the first four underscore-separated filename fields. The final two ternary filename fields are preserved as `variant_code_1` and `variant_code_2` without assigning them undocumented meanings.'''
@@ -286,7 +338,9 @@ def _write_readme(output: Path, dataset: str) -> None:
 '''
     else:
         description = '''Each row stores the original 37×37 float32 background and mask arrays from one KorSynthetic JSON sample, plus original class index, Hangul symbol, sample filename and remaining source metadata. Training code samples a background and multiplies it by the mask; the arrays are kept separate to preserve that behavior.'''
-        features = ""
+        if preview_images:
+            description += " The optional `preview_image` is a static visualization using this sample's own background; it is not the randomized training composite."
+        features = _kor_hf_features(preview_images)
     readme = f'''---
 configs:
 - config_name: {config_name}
@@ -319,13 +373,17 @@ def main() -> None:
     parser.add_argument("--class-ids", help="Optional comma-separated subset for conversion smoke checks")
     parser.add_argument("--rows-per-shard", type=int, default=DEFAULT_ROWS_PER_SHARD)
     parser.add_argument("--row-group-size", type=int, default=DEFAULT_ROW_GROUP_SIZE)
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Parallel class converters; keep modest on shared/network storage")
+    parser.add_argument("--preview-images", action="store_true", help="Add KorSynthetic Image previews to Parquet for visual inspection in the Hub viewer")
     parser.add_argument("--compression", choices=("zstd", "snappy", "none"), default="zstd")
     parser.add_argument("--resume", action="store_true", help="Resume matching completed shards in an output directory")
     args = parser.parse_args()
-    if args.rows_per_shard < 1 or args.row_group_size < 1:
-        parser.error("--rows-per-shard and --row-group-size must be positive")
+    if args.rows_per_shard < 1 or args.row_group_size < 1 or args.workers < 1:
+        parser.error("--rows-per-shard, --row-group-size, and --workers must be positive")
     if args.dataset == "phd08" and args.alphabet_json is None:
         parser.error("--alphabet-json is required for PHD08 so numeric class folders are stored with their Hangul labels")
+    if args.dataset == "phd08" and args.preview_images:
+        parser.error("--preview-images is only for KorSynthetic; PHD08 already stores its PNG images")
     source_root = args.root.expanduser().resolve()
     output = args.output.expanduser().resolve()
     if source_root == output or source_root in output.parents:
@@ -344,7 +402,8 @@ def main() -> None:
                 state_meta.get("selected_class_ids") != (sorted(selected) if selected is not None else None) or
                 state_meta.get("rows_per_shard") != args.rows_per_shard or
                 state_meta.get("row_group_size") != args.row_group_size or
-                state_meta.get("compression") != args.compression):
+                state_meta.get("compression") != args.compression or
+                state_meta.get("preview_images") != args.preview_images):
             parser.error("Existing conversion state belongs to a different source; choose another --output")
     elif any(path for path in output.iterdir() if path.name != STATE_DIRNAME) and not args.resume:
         parser.error("Output directory is not empty; choose a new directory or use --resume")
@@ -356,6 +415,7 @@ def main() -> None:
             "rows_per_shard": args.rows_per_shard,
             "row_group_size": args.row_group_size,
             "compression": args.compression,
+            "preview_images": args.preview_images,
         }, indent=2) + "\n", encoding="utf-8")
 
     alphabet = None
@@ -396,7 +456,8 @@ def main() -> None:
         if (existing_manifest.get("dataset") != args.dataset or existing_ids != requested_ids or
                 existing_manifest.get("rows_per_shard_limit") != args.rows_per_shard or
                 existing_manifest.get("row_group_size") != args.row_group_size or
-                existing_manifest.get("compression") != args.compression):
+                existing_manifest.get("compression") != args.compression or
+                existing_manifest.get("preview_images", False) != args.preview_images):
             parser.error("Existing Parquet output has a different dataset/class subset; choose another --output")
 
     completed_path = output / STATE_DIRNAME / "state.jsonl"
@@ -407,33 +468,70 @@ def main() -> None:
                 completed.add(int(json.loads(line)["class_index"]))
     class_files: dict[str, list[str]] = {}
     class_sample_counts: dict[str, int] = {}
-    for index, class_dir in enumerate(class_dirs, start=1):
+    tasks = []
+    completed_count = 0
+    for class_dir in class_dirs:
         class_index = int(class_dir.name)
-        symbol = alphabet[class_index] if alphabet is not None else str(class_index)
-        if index == 1 or index % 100 == 0:
-            print(f"Converting class {index}/{len(class_dirs)} (folder {class_index})", flush=True)
         if class_index in completed:
             existing = _class_output_files(output, class_index)
             if not existing:
                 raise ValueError(f"Conversion state marks class {class_index} complete but no shards exist")
             class_files[str(class_index)] = [str(path.relative_to(output)) for path in existing]
             class_sample_counts[str(class_index)] = sum(pq.ParquetFile(path).metadata.num_rows for path in existing)
+            completed_count += 1
             continue
-        files = _convert_class(
-            args.dataset, class_dir, symbol, output,
-            args.rows_per_shard, args.row_group_size,
-            args.compression,
-            args.resume,
-        )
-        class_files[str(class_index)] = files
-        class_sample_counts[str(class_index)] = sum(pq.ParquetFile(output / path).metadata.num_rows for path in files)
-        with completed_path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({"class_index": class_index, "parquet_files": files}, ensure_ascii=False) + "\n")
-        if index % 100 == 0 or index == len(class_dirs):
-            print(f"Converted {index}/{len(class_dirs)} classes", flush=True)
+        symbol = alphabet[class_index] if alphabet is not None else str(class_index)
+        tasks.append((
+            args.dataset, class_dir, symbol, output, args.rows_per_shard,
+            args.row_group_size, args.compression, args.resume, args.preview_images,
+        ))
+
+    if args.workers == 1:
+        results = map(_convert_class_worker, tasks)
+        for class_index, files, row_count in results:
+            class_files[str(class_index)] = files
+            class_sample_counts[str(class_index)] = row_count
+            with completed_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"class_index": class_index, "parquet_files": files}, ensure_ascii=False) + "\n")
+            completed_count += 1
+            if completed_count % 100 == 0 or completed_count == len(class_dirs):
+                print(f"Converted {completed_count}/{len(class_dirs)} classes", flush=True)
+    else:
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            pending = {}
+            task_iter = iter(tasks)
+            max_pending = max(args.workers, args.workers * 2)
+            exhausted = False
+            while pending or not exhausted:
+                while not exhausted and len(pending) < max_pending:
+                    try:
+                        task = next(task_iter)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    class_dir = task[1]
+                    class_index = int(class_dir.name)
+                    if len(pending) == 0 and (completed_count == 0 or completed_count % 100 == 0):
+                        print(f"Submitting class folder {class_index} ({completed_count}/{len(class_dirs)} complete)", flush=True)
+                    pending[executor.submit(_convert_class_worker, task)] = class_index
+                if not pending:
+                    continue
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    pending.pop(future)
+                    class_index, files, row_count = future.result()
+                    class_files[str(class_index)] = files
+                    class_sample_counts[str(class_index)] = row_count
+                    with completed_path.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps({"class_index": class_index, "parquet_files": files}, ensure_ascii=False) + "\n")
+                    completed_count += 1
+                    if completed_count % 100 == 0 or completed_count == len(class_dirs):
+                        print(f"Converted {completed_count}/{len(class_dirs)} classes", flush=True)
 
     ordered_indices = sorted((int(value) for value in class_files))
     class_names_hash = _labels_hash([str(value) for value in ordered_indices])
+    class_files = {str(index): class_files[str(index)] for index in ordered_indices}
+    class_sample_counts = {str(index): class_sample_counts[str(index)] for index in ordered_indices}
     manifest = {
         "format": FORMAT,
         "dataset": args.dataset,
@@ -448,6 +546,7 @@ def main() -> None:
         "rows_per_shard_limit": args.rows_per_shard,
         "row_group_size": args.row_group_size,
         "compression": args.compression,
+        "preview_images": args.preview_images,
     }
     if args.dataset == "phd08":
         manifest["kor_synthetic_alignment"] = {
@@ -462,7 +561,7 @@ def main() -> None:
         if alphabet_path.resolve() != target_alphabet.resolve():
             shutil.copy2(alphabet_path, target_alphabet)
     (output / "dataset_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    _write_readme(output, args.dataset)
+    _write_readme(output, args.dataset, args.preview_images)
     shutil.rmtree(output / STATE_DIRNAME, ignore_errors=True)
     print(f"Wrote {manifest['total_samples']} rows across {len(class_files)} classes to {output}")
 

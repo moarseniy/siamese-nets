@@ -82,23 +82,34 @@ python scripts/prepare_manifests.py --dataset kor_synthetic --root /home/arseniy
 ## Parquet-копия для Hugging Face
 
 `scripts/convert_datasets_to_parquet.py` создаёт локальный Dataset-репозиторий:
-строки PHD08 хранят встроенные PNG и ID семейства, а строки KorSynthetic —
-исходные float32-массивы фона и маски. Это сохраняет текущую сборку изображения,
-где код выбирает фон и накладывает на него маску. Для PHD08 обязательно укажи
-именно файл алфавита через `--alphabet-json`: конвертер записывает символ
-хангыль, fingerprint алфавита и копию JSON в Parquet-каталог.
+строки PHD08 хранят встроенные PNG и ID семейства, KorSynthetic — float32-массивы
+фона и маски. Это сохраняет текущую сборку изображения. Классы обрабатываются
+параллельно; по умолчанию используется не более восьми worker-ов. На медленном
+сетевом диске уменьши `--workers`. Для PHD08 обязательно укажи файл алфавита через
+`--alphabet-json`: конвертер записывает символ хангыль, fingerprint алфавита
+и копию JSON в Parquet-каталог.
+
+В Parquet-версии PHD08 изображения доступны в колонке `image`. Для KorSynthetic
+числовые массивы по умолчанию не превращаются в изображения. Если нужен просмотр
+строк прямо в Dataset Viewer Hugging Face, добавь KorSynthetic-конвертации флаг
+`--preview-images`. Он добавляет отдельный статический preview, созданный из
+образца; обучение продолжает пользоваться исходными массивами и случайной
+сборкой фона. Превью увеличивает время конвертации и размер Parquet; без флага
+экспортируются только исходные массивы.
 
 ```bash
 python scripts/convert_datasets_to_parquet.py \
   --dataset kor_synthetic \
   --root /home/arseniy/data/kor_synthetic \
-  --output /mnt/datasets/kor_synthetic
+  --output /mnt/datasets/kor_synthetic \
+  --workers 8
 
 python scripts/convert_datasets_to_parquet.py \
   --dataset phd08 \
   --root /home/arseniy/data/PHD08_dataset \
   --alphabet-json /home/arseniy/data/kor_synthetic/alphabet.json \
-  --output /mnt/datasets/phd08
+  --output /mnt/datasets/phd08 \
+  --workers 8
 ```
 
 Конвертация выполняется по классам и продолжается с `--resume` после прерывания.

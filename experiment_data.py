@@ -653,7 +653,7 @@ class SampleDataset(Dataset):
             image_ops.append(transforms.Normalize(mean=image_mean, std=image_std))
         self.image_transform = transforms.Compose(image_ops)
         self._background_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
-        self._parquet_row_group_cache: OrderedDict[tuple[str, int], object] = OrderedDict()
+        self._parquet_row_group_cache: OrderedDict[tuple[str, int, tuple[str, ...] | None], object] = OrderedDict()
 
     def __len__(self):
         return 1
@@ -668,8 +668,7 @@ class SampleDataset(Dataset):
     def _load_image(self, ref: SampleRef) -> torch.Tensor:
         if self.catalog.modality == "kor_synthetic":
             if ref.parquet_path is not None:
-                source = self._parquet_row(ref)
-                mask_values = source["mask"]
+                mask_values = self._kor_parquet_arrays(ref)["mask"]
             else:
                 with open(ref.value, "r", encoding="utf-8") as stream:
                     source = json.load(stream)
@@ -685,7 +684,7 @@ class SampleDataset(Dataset):
             cache_key = background_ref.uid
             if cache_key not in self._background_cache:
                 if background_ref.parquet_path is not None:
-                    background_data = self._parquet_row(background_ref)["background"]
+                    background_data = self._kor_parquet_arrays(background_ref)["background"]
                 else:
                     with open(background_ref.value, "r", encoding="utf-8") as stream:
                         background_data = json.load(stream)[0]["data"]
@@ -696,7 +695,7 @@ class SampleDataset(Dataset):
             return image.expand(3, -1, -1) if self.image_channels == 3 else image
 
         if ref.parquet_path is not None:
-            image_data = self._parquet_row(ref)["image"]
+            image_data = self._parquet_row(ref, columns=["image"])["image"]
             encoded = image_data.get("bytes") if isinstance(image_data, dict) else image_data
             if encoded is None:
                 raise ValueError(f"Parquet image row has no embedded bytes: {ref.uid}")
@@ -708,10 +707,11 @@ class SampleDataset(Dataset):
             image = image_file.convert("L" if self.image_channels == 1 else "RGB")
             return self.image_transform(image)
 
-    def _parquet_row(self, ref: SampleRef) -> dict:
+    def _parquet_row(self, ref: SampleRef, columns: list[str] | None = None) -> dict:
         if ref.parquet_path is None or ref.parquet_row_group is None or ref.parquet_row_offset is None:
             raise ValueError(f"Incomplete Parquet row reference for {ref.uid}")
-        key = (ref.parquet_path, ref.parquet_row_group)
+        selected_columns = tuple(columns) if columns is not None else None
+        key = (ref.parquet_path, ref.parquet_row_group, selected_columns)
         if key in self._parquet_row_group_cache:
             self._parquet_row_group_cache.move_to_end(key)
             table = self._parquet_row_group_cache[key]
@@ -720,7 +720,9 @@ class SampleDataset(Dataset):
                 import pyarrow.parquet as pq
             except ImportError as exc:
                 raise RuntimeError("Reading Parquet datasets requires pyarrow; install requirements-experiments.txt") from exc
-            table = pq.ParquetFile(ref.parquet_path).read_row_group(ref.parquet_row_group)
+            table = pq.ParquetFile(ref.parquet_path).read_row_group(
+                ref.parquet_row_group, columns=columns
+            )
             self._parquet_row_group_cache[key] = table
             while len(self._parquet_row_group_cache) > 16:
                 self._parquet_row_group_cache.popitem(last=False)
@@ -728,6 +730,12 @@ class SampleDataset(Dataset):
             name: table.column(name)[ref.parquet_row_offset].as_py()
             for name in table.column_names
         }
+
+    def _kor_parquet_arrays(self, ref: SampleRef) -> dict:
+        row = self._parquet_row(ref, columns=["background", "mask"])
+        if "background" in row and "mask" in row:
+            return row
+        raise ValueError(f"KorSynthetic Parquet row is missing background/mask arrays: {ref.uid}")
 
 
 def collate_samples(batch: list[dict]) -> dict:
