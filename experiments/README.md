@@ -123,6 +123,28 @@ python scripts/convert_datasets_to_parquet.py \
 KorSynthetic. Её можно загрузить как Dataset-репозиторий. Перед публичной
 публикацией добавь проверенный источник и лицензию в README датасета.
 
+Чтобы восстановить привычные папки из скачанного Parquet-каталога, используй
+`scripts/restore_datasets_from_parquet.py`:
+
+```bash
+python scripts/restore_datasets_from_parquet.py \
+  --dataset kor_synthetic \
+  --parquet-root /mnt/datasets/kor_synthetic \
+  --output /mnt/restored/kor_synthetic \
+  --workers 8
+
+python scripts/restore_datasets_from_parquet.py \
+  --dataset phd08 \
+  --parquet-root /mnt/datasets/phd08 \
+  --output /mnt/restored/PHD08_dataset \
+  --workers 8
+```
+
+PHD08 PNG-файлы возвращаются байт-в-байт. KorSynthetic JSON восстанавливается
+с исходными полями и float32-значениями массивов; сериализация чисел в текст JSON
+может отличаться от исходного форматирования, но значения после чтения обратно в
+float32 совпадают. Для продолжения прерванного восстановления добавь `--resume`.
+
 Манифест CUB следует `images.txt` и указывает восемь дополнительных JPG-файлов,
 которых нет в метаданных. Повторяющиеся тексты CLINC сохраняются в официальных
 разбиениях; эта политика зафиксирована в манифесте. Протокол KorSynthetic для

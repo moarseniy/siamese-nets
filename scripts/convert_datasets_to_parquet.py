@@ -144,13 +144,15 @@ def _kor_row(class_index: int, symbol: str, path: Path, preview_images: bool) ->
     for item, expected_label in ((background, "main_data"), (mask, "main_data_mask")):
         if item.get("label") != expected_label or item.get("shape") != [37, 37, 1] or len(item.get("data", [])) != 1369:
             raise ValueError(f"Unexpected KorSynthetic image record in {path}")
-    if symbol_record.get("label") != "symbols_0" or len(symbol_record.get("data", [])) != 1:
+    if (markup.get("label") != "markup_source" or markup.get("shape") != [1, 1, 1] or
+            len(markup.get("data", [])) != 1):
+        raise ValueError(f"Unexpected KorSynthetic metadata record in {path}")
+    if (symbol_record.get("label") != "symbols_0" or symbol_record.get("shape") != [1, 1, 1] or
+            len(symbol_record.get("data", [])) != 1):
         raise ValueError(f"Unexpected KorSynthetic symbol record in {path}")
     symbol_index = int(symbol_record["data"][0])
     if symbol_index != class_index:
         raise ValueError(f"Sample label index {symbol_index} does not match folder {class_index}: {path}")
-    if len(markup.get("data", [])) != 1:
-        raise ValueError(f"Unexpected KorSynthetic metadata record in {path}")
     markup_value = float(markup["data"][0])
     row = {
         "class_index": class_index,
@@ -537,6 +539,7 @@ def main() -> None:
         "dataset": args.dataset,
         "schema_version": 1,
         "source_layout": str(class_root.name),
+        "class_root_relative": "" if class_root.resolve() == source_root else str(class_root.resolve().relative_to(source_root)),
         "class_indices": ordered_indices,
         "class_files": class_files,
         "samples_per_class": class_sample_counts,
@@ -556,6 +559,7 @@ def main() -> None:
         }
     if alphabet_path is not None:
         manifest["alphabet_file"] = "alphabet.json"
+        manifest["source_alphabet_filename"] = alphabet_path.name
         manifest["alphabet_sha256"] = alphabet_hash
         target_alphabet = output / "alphabet.json"
         if alphabet_path.resolve() != target_alphabet.resolve():
