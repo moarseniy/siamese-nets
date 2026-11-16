@@ -140,6 +140,36 @@ P5 автоматически использует KorSynthetic для обуч�
 оценки. Если данные на вычислительном узле находятся в других местах, задай их
 через `--data-root`, а для P5 также через `--eval-data-root`.
 
+## Parquet-каталоги с Hugging Face
+
+Чтобы создать Parquet-версии исходных данных, выполни команды из
+[README экспериментов](README.md#parquet-копия-для-hugging-face). Загрузчик
+поддерживает оба варианта: исходные папки с PNG/JSON и локально скачанный
+Parquet-каталог с `dataset_manifest.json`. Скачивай с Hub весь каталог, включая
+этот манифест и `alphabet.json` KorSynthetic.
+
+Для P1–P4 вместо стандартного корня передай путь к PHD08 Parquet-каталогу:
+
+```bash
+python scripts/launch_experiment.py \
+  --config phd08_smoke_pilot \
+  --models-dir "$MODEL_DIR" \
+  --data-root /mnt/datasets/phd08
+```
+
+Для P5 укажи оба локальных каталога:
+
+```bash
+python scripts/launch_experiment.py \
+  --config phd08_synthetic_metric_2350 \
+  --cross-entropy-config phd08_synthetic_2350 \
+  --phd08-baseline --models-dir "$MODEL_DIR" \
+  --data-root /mnt/datasets/kor_synthetic \
+  --eval-data-root /mnt/datasets/phd08 \
+  --seeds 1,2,3,4,5 --run-test \
+  --output-dir experiments/jobs/phd08_p5_2350_parquet
+```
+
 Полезные общие параметры:
 
 - `--seed 7` задаёт одно начальное значение генератора случайных чисел;
@@ -167,6 +197,26 @@ P5 автоматически использует KorSynthetic для обуч�
 используй результаты итоговой оценки для подбора гиперпараметров.
 
 ## Матрицы PHD08
+
+### Сначала: короткий smoke-запуск
+
+Сначала проверь команду без обучения, затем выполни один короткий проход:
+
+```bash
+python scripts/launch_experiment.py \
+  --config phd08_smoke_pilot \
+  --models-dir "$MODEL_DIR" \
+  --dry-run
+
+python scripts/launch_experiment.py \
+  --config phd08_smoke_pilot \
+  --models-dir "$MODEL_DIR" \
+  --output experiments/runs/phd08_smoke_pilot
+```
+
+Пилот делает два шага CATML-обучения и nearest-exemplar validation на пяти
+классах PHD08. Он проверяет запуск модели, загрузку PNG, обучение, checkpoint и
+метрики; его результат не входит в PhD-таблицы. При успехе переходи к P1/P2.
 
 ### P1/P2: известные классы, полный и ограниченный бюджет
 

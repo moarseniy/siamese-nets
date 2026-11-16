@@ -79,6 +79,39 @@ python scripts/prepare_manifests.py --dataset clinc150 --root /home/arseniy/data
 python scripts/prepare_manifests.py --dataset kor_synthetic --root /home/arseniy/data/kor_synthetic --phd-root /home/arseniy/data/PHD08_dataset --output experiments/manifests/kor_synthetic.json --seed 20261113
 ```
 
+## Parquet-копия для Hugging Face
+
+`scripts/convert_datasets_to_parquet.py` создаёт локальный Dataset-репозиторий:
+строки PHD08 хранят встроенные PNG и ID семейства, а строки KorSynthetic —
+исходные float32-массивы фона и маски. Это сохраняет текущую сборку изображения,
+где код выбирает фон и накладывает на него маску. Для PHD08 обязательно укажи
+именно файл алфавита через `--alphabet-json`: конвертер записывает символ
+хангыль, fingerprint алфавита и копию JSON в Parquet-каталог.
+
+```bash
+python scripts/convert_datasets_to_parquet.py \
+  --dataset kor_synthetic \
+  --root /home/arseniy/data/kor_synthetic \
+  --output /mnt/datasets/kor_synthetic
+
+python scripts/convert_datasets_to_parquet.py \
+  --dataset phd08 \
+  --root /home/arseniy/data/PHD08_dataset \
+  --alphabet-json /home/arseniy/data/kor_synthetic/alphabet.json \
+  --output /mnt/datasets/phd08
+```
+
+Конвертация выполняется по классам и продолжается с `--resume` после прерывания.
+Сначала можно проверить формат на двух классах в отдельных временных папках,
+добавив `--class-ids 18,19`. Частичный набор годится только для smoke-проверки:
+полные экспериментальные конфиги отклонят его по контрольным суммам манифеста.
+Полный локальный Parquet-каталог передавай через `--data-root`; для P5 укажи
+`--data-root` KorSynthetic и `--eval-data-root` PHD08.
+
+Выходная папка содержит `dataset_manifest.json`, Parquet-шарды и копию алфавита
+KorSynthetic. Её можно загрузить как Dataset-репозиторий. Перед публичной
+публикацией добавь проверенный источник и лицензию в README датасета.
+
 Манифест CUB следует `images.txt` и указывает восемь дополнительных JPG-файлов,
 которых нет в метаданных. Повторяющиеся тексты CLINC сохраняются в официальных
 разбиениях; эта политика зафиксирована в манифесте. Протокол KorSynthetic для
@@ -97,9 +130,11 @@ python scripts/prepare_manifests.py --dataset kor_synthetic --root /home/arseniy
 проверку, добавь `--deep-scan`.
 
 В PHD08 и KorSynthetic номер папки `N` напрямую указывает на элемент `N` в
-`kor_101_mfcr.json`. Таблица соответствий не нужна. Генератор манифеста проверяет,
+`alphabet.json` или `kor_101_mfcr.json`. Таблица соответствий не нужна. Генератор манифеста проверяет,
 что все 2 350 номеров папок PHD08 соответствуют разным символам хангыль и что
-папки с такими же номерами есть в KorSynthetic. При оценке P5 тот же индексный
+папки с такими же номерами есть в KorSynthetic. Для исходного KorSynthetic
+поддерживаются `alphabet.json` и классический `kor_101_mfcr.json`; папки классов
+могут лежать в `data/` или `retrieve_mtr_per_class/`. При оценке P5 тот же индексный
 способ применяется во время запуска; проверяются контрольные суммы алфавита и
 набора меток классов.
 

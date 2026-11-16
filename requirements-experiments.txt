@@ -1,6 +1,7 @@
 # Install the Blackwell PyTorch wheels separately as described in
 # experiments/README.md. These are the non-PyTorch experiment dependencies.
 numpy==2.2.6
+pyarrow==20.0.0
 Pillow==11.1.0
 scikit-learn==1.6.1
 sentence-transformers==4.1.0

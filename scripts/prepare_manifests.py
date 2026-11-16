@@ -258,6 +258,29 @@ def _phd_root(root: Path) -> Path:
     return candidate
 
 
+def _kor_class_root(root: Path) -> Path:
+    for candidate in (root / "retrieve_mtr_per_class", root / "data", root):
+        if candidate.is_dir() and any(path.is_dir() and path.name.isdigit() for path in candidate.iterdir()):
+            return candidate
+    raise FileNotFoundError(f"Cannot find numeric KorSynthetic class folders under {root}")
+
+
+def _kor_alphabet_path(root: Path, class_root: Path) -> Path:
+    candidates = [root / "kor_101_mfcr.json", root / "alphabet.json", class_root.parent / "kor_101_mfcr.json", class_root.parent / "alphabet.json"]
+    path = next((item for item in candidates if item.is_file()), None)
+    if path is None:
+        raise FileNotFoundError(f"Cannot find kor_101_mfcr.json or alphabet.json under {root}")
+    return path
+
+
+def _read_kor_alphabet(path: Path) -> list[str]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entries = payload.get("alphabet")
+    if not isinstance(entries, list) or not entries or not isinstance(entries[0], list):
+        raise ValueError(f"Unexpected KorSynthetic alphabet schema in {path}")
+    return [entry[0] for entry in entries[0]]
+
+
 def _phd_manifest(root: Path, seed: int, deep_scan: bool = False, kor_root: Path | None = None) -> dict:
     data_root = _phd_root(root)
     labels = sorted((path.name for path in data_root.iterdir() if path.is_dir()), key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
@@ -322,9 +345,9 @@ def _phd_manifest(root: Path, seed: int, deep_scan: bool = False, kor_root: Path
     alignment_alphabet_sha256 = None
     if kor_root is not None:
         kor_root = kor_root.expanduser().resolve()
-        kor_classes = kor_root / "retrieve_mtr_per_class" if (kor_root / "retrieve_mtr_per_class").is_dir() else kor_root
-        alphabet_path = kor_root / "kor_101_mfcr.json" if (kor_root / "kor_101_mfcr.json").exists() else kor_classes.parent / "kor_101_mfcr.json"
-        alphabet = [entry[0] for entry in json.loads(alphabet_path.read_text(encoding="utf-8"))["alphabet"][0]]
+        kor_classes = _kor_class_root(kor_root)
+        alphabet_path = _kor_alphabet_path(kor_root, kor_classes)
+        alphabet = _read_kor_alphabet(alphabet_path)
         kor_folder_ids = {int(path.name) for path in kor_classes.iterdir() if path.is_dir() and path.name.isdigit()}
         p5_symbols = []
         for label in labels:
@@ -342,7 +365,7 @@ def _phd_manifest(root: Path, seed: int, deep_scan: bool = False, kor_root: Path
         alignment_alphabet_sha256 = _sha256(alphabet_path)
         p5_protocol = {"classes": p5_symbols, "label_space": "PHD08 2350-class subset mapped through alphabet[index]"}
         integrity["kor_synthetic_alignment"] = {
-            "method": "folder index -> kor_101_mfcr alphabet at the same position",
+            "method": "folder index -> same-position symbol in alphabet.json or kor_101_mfcr.json",
             "p5_class_count": len(p5_symbols),
             "alphabet_sha256": alignment_alphabet_sha256,
             "all_indices_present_in_kor_synthetic": True,
@@ -374,11 +397,9 @@ def _phd_manifest(root: Path, seed: int, deep_scan: bool = False, kor_root: Path
 
 
 def _kor_manifest(root: Path, seed: int, phd_root: Path | None = None) -> dict:
-    base = root / "retrieve_mtr_per_class" if (root / "retrieve_mtr_per_class").is_dir() else root
-    alphabet_path = root / "kor_101_mfcr.json" if (root / "kor_101_mfcr.json").exists() else base.parent / "kor_101_mfcr.json"
-    if not alphabet_path.exists():
-        raise FileNotFoundError(f"Cannot find kor_101_mfcr.json adjacent to {root}")
-    alphabet = [entry[0] for entry in json.loads(alphabet_path.read_text(encoding="utf-8"))["alphabet"][0]]
+    base = _kor_class_root(root)
+    alphabet_path = _kor_alphabet_path(root, base)
+    alphabet = _read_kor_alphabet(alphabet_path)
     class_dirs = sorted((path.name for path in base.iterdir() if path.is_dir()), key=lambda name: (not name.isdigit(), int(name) if name.isdigit() else name))
     if len(class_dirs) != len(alphabet):
         raise ValueError(f"Folder/alphabet count mismatch: {len(class_dirs)} folders, {len(alphabet)} symbols")

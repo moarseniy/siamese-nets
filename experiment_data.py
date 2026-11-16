@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import os
 import random
 from collections import OrderedDict, defaultdict
@@ -41,6 +42,9 @@ class SampleRef:
     value: str
     source_split: str | None = None
     family_id: str | None = None
+    parquet_path: str | None = None
+    parquet_row_group: int | None = None
+    parquet_row_offset: int | None = None
 
 
 class ClassSource:
@@ -55,8 +59,9 @@ class ClassSource:
         image_split_file: dict[str, str] | None = None,
         uid_prefix: str | None = None,
         family_grouping: bool = False,
+        parquet_files: list[Path] | None = None,
     ):
-        if records is None and folder is None:
+        if records is None and folder is None and not parquet_files:
             raise ValueError("ClassSource needs records or a folder")
         self.label = label
         self.modality = modality
@@ -65,6 +70,7 @@ class ClassSource:
         self.image_split_file = image_split_file or {}
         self.uid_prefix = uid_prefix or label
         self.family_grouping = bool(family_grouping)
+        self.parquet_files = tuple(Path(path) for path in (parquet_files or ()))
         self._file_cache: OrderedDict[str, tuple[SampleRef, ...]] = OrderedDict()
         self._family_cache: OrderedDict[str, dict[str, tuple[SampleRef, ...]]] = OrderedDict()
         self._family_split_cache: dict[tuple[int, str], dict[str, set[str]]] = {}
@@ -72,6 +78,8 @@ class ClassSource:
         self._representative_cache: OrderedDict[tuple[str, int, str, int], tuple[SampleRef, ...]] = OrderedDict()
 
     def _folder_records(self) -> tuple[SampleRef, ...]:
+        if self.parquet_files:
+            return self._parquet_records()
         key = str(self.folder)
         if key in self._file_cache:
             self._file_cache.move_to_end(key)
@@ -97,11 +105,52 @@ class ClassSource:
             self._file_cache.popitem(last=False)
         return records
 
+    def _parquet_records(self) -> tuple[SampleRef, ...]:
+        cache_key = "parquet:" + "|".join(map(str, self.parquet_files))
+        if cache_key in self._file_cache:
+            self._file_cache.move_to_end(cache_key)
+            return self._file_cache[cache_key]
+        try:
+            import pyarrow.parquet as pq
+        except ImportError as exc:
+            raise RuntimeError("Reading Parquet datasets requires pyarrow; install requirements-experiments.txt") from exc
+        records: list[SampleRef] = []
+        for parquet_path in self.parquet_files:
+            parquet_file = pq.ParquetFile(parquet_path)
+            required_columns = ["filename"]
+            if self.family_grouping:
+                required_columns.append("family_id")
+            if not set(required_columns).issubset(parquet_file.schema_arrow.names):
+                raise ValueError(f"Parquet class shard is missing columns {required_columns}: {parquet_path}")
+            for row_group in range(parquet_file.metadata.num_row_groups):
+                metadata = parquet_file.read_row_group(row_group, columns=required_columns).to_pylist()
+                for row_offset, row in enumerate(metadata):
+                    filename = str(row["filename"])
+                    family_id = row.get("family_id")
+                    if self.family_grouping:
+                        expected_family_id = phd08_family_id(self.uid_prefix, filename)
+                        if family_id != expected_family_id:
+                            raise ValueError(f"PHD08 Parquet family ID mismatch for {self.uid_prefix}/{filename}")
+                    records.append(SampleRef(
+                        self.label,
+                        f"{self.uid_prefix}/{filename}",
+                        filename,
+                        family_id=family_id,
+                        parquet_path=str(parquet_path),
+                        parquet_row_group=row_group,
+                        parquet_row_offset=row_offset,
+                    ))
+        result = tuple(records)
+        self._file_cache[cache_key] = result
+        while len(self._file_cache) > 128:
+            self._file_cache.popitem(last=False)
+        return result
+
     def all_records(self) -> tuple[SampleRef, ...]:
         return tuple(self.records) if self.records is not None else self._folder_records()
 
     def _family_groups(self) -> dict[str, tuple[SampleRef, ...]]:
-        cache_key = str(self.folder)
+        cache_key = str(self.folder) if self.folder is not None else "parquet:" + "|".join(map(str, self.parquet_files))
         if cache_key in self._family_cache:
             self._family_cache.move_to_end(cache_key)
             return self._family_cache[cache_key]
@@ -308,13 +357,13 @@ class DatasetCatalog:
     def sample_class(self, label: str, split: str, seed: int, protocol: str, k: int, rng: random.Random, max_examples: int | None = None):
         return self.classes[label].sample(split, seed, protocol, k, rng, max_examples)
 
-    def random_kor_background(self, rng: random.Random, allowed_labels: list[str] | None = None) -> str:
+    def random_kor_background(self, rng: random.Random, allowed_labels: list[str] | None = None) -> SampleRef:
         labels = allowed_labels or self.labels
         source = self.classes[rng.choice(labels)]
         refs = source.all_records()
         if not refs:
             raise ValueError("KorSynthetic contains an empty class folder")
-        return rng.choice(refs).value
+        return rng.choice(refs)
 
 
 def _find_cub_root(root: Path) -> Path:
@@ -343,11 +392,64 @@ def _file_sha256(path: Path) -> str:
 def load_kor_alphabet(root: str | Path) -> tuple[list[str], str]:
     """Read KorSynthetic's indexed alphabet and return its SHA-256 fingerprint."""
     root = Path(root).expanduser().resolve()
-    class_root = root / "retrieve_mtr_per_class" if (root / "retrieve_mtr_per_class").is_dir() else root
-    alphabet_path = root / "kor_101_mfcr.json" if (root / "kor_101_mfcr.json").exists() else class_root.parent / "kor_101_mfcr.json"
+    parquet_manifest_path = root / "dataset_manifest.json"
+    parquet_manifest = json.loads(parquet_manifest_path.read_text(encoding="utf-8")) if parquet_manifest_path.is_file() else None
+    candidates = []
+    if parquet_manifest and parquet_manifest.get("alphabet_file"):
+        candidates.append(root / parquet_manifest["alphabet_file"])
+    for parent in (root, root.parent):
+        candidates.extend((parent / "kor_101_mfcr.json", parent / "alphabet.json"))
+    alphabet_path = next((path for path in candidates if path.is_file()), None)
+    if alphabet_path is None:
+        raise FileNotFoundError(f"Cannot find kor_101_mfcr.json or alphabet.json under {root}")
     payload = json.loads(alphabet_path.read_text(encoding="utf-8"))
-    alphabet = [entry[0] for entry in payload["alphabet"][0]]
+    alphabet = _alphabet_symbols(payload)
     return alphabet, _file_sha256(alphabet_path)
+
+
+def _alphabet_symbols(payload: dict) -> list[str]:
+    entries = payload.get("alphabet")
+    if not isinstance(entries, list) or not entries or not isinstance(entries[0], list):
+        raise ValueError("KorSynthetic alphabet file must contain an alphabet array")
+    result = []
+    for entry in entries[0]:
+        if not isinstance(entry, list) or not entry or not isinstance(entry[0], str):
+            raise ValueError("Unexpected KorSynthetic alphabet entry")
+        result.append(entry[0])
+    return result
+
+
+def _numeric_class_root(root: Path) -> Path:
+    for candidate in (root / "retrieve_mtr_per_class", root / "data", root):
+        if candidate.is_dir() and any(path.is_dir() and path.name.isdigit() for path in candidate.iterdir()):
+            return candidate
+    raise FileNotFoundError(f"Cannot find numeric KorSynthetic class folders under {root}")
+
+
+def _read_parquet_dataset_manifest(root: Path, dataset: str) -> dict | None:
+    manifest_path = root / "dataset_manifest.json"
+    if not manifest_path.is_file():
+        return None
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if payload.get("format") != "siamese-nets-parquet-v1":
+        return None
+    if payload.get("dataset") != dataset:
+        raise ValueError(f"Parquet manifest at {root} is for {payload.get('dataset')!r}, not {dataset!r}")
+    return payload
+
+
+def _parquet_class_files(root: Path, manifest: dict) -> dict[str, list[Path]]:
+    class_files = manifest.get("class_files")
+    if not isinstance(class_files, dict):
+        raise ValueError("Parquet dataset manifest has no class_files mapping")
+    resolved = {}
+    for class_index, files in class_files.items():
+        paths = [root / relative for relative in files]
+        missing = [str(path) for path in paths if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(f"Parquet dataset is incomplete; missing shard {missing[0]}")
+        resolved[str(class_index)] = paths
+    return resolved
 
 
 def load_catalog(
@@ -420,6 +522,41 @@ def load_catalog(
         return catalog
 
     if name == "phd08":
+        parquet_manifest = _read_parquet_dataset_manifest(root, "phd08")
+        if parquet_manifest is not None:
+            if (phd_alphabet is not None and parquet_manifest.get("alphabet_sha256") and
+                    parquet_manifest["alphabet_sha256"] != phd_alphabet_sha256):
+                raise ValueError("PHD08 Parquet catalog was converted with a different KorSynthetic alphabet")
+            files_by_class = _parquet_class_files(root, parquet_manifest)
+            class_indices = sorted((str(value) for value in parquet_manifest.get("class_indices", [])), key=lambda value: int(value))
+            if not class_indices:
+                raise ValueError("PHD08 Parquet manifest contains no class indices")
+            sources = {}
+            for class_index in class_indices:
+                if class_index not in files_by_class:
+                    raise ValueError(f"PHD08 Parquet manifest has no files for class {class_index}")
+                label = class_index
+                if phd_alphabet is not None:
+                    if not class_index.isdigit() or int(class_index) >= len(phd_alphabet):
+                        raise ValueError(f"PHD08 class index {class_index!r} is outside the KorSynthetic alphabet")
+                    label = phd_alphabet[int(class_index)]
+                    if len(label) != 1 or not 0xAC00 <= ord(label) <= 0xD7A3:
+                        raise ValueError(f"PHD08 folder {class_index} maps to a non-Hangul symbol {label!r}")
+                if label in sources:
+                    raise ValueError(f"PHD08 class indices map to the same symbol {label!r}")
+                sources[label] = ClassSource(
+                    label, "image", parquet_files=files_by_class[class_index],
+                    uid_prefix=class_index, family_grouping=True,
+                )
+            class_hash = hashlib.sha256("\n".join(class_indices).encode("utf-8")).hexdigest()
+            fingerprints = {"class_names_sha256": class_hash}
+            if phd_alphabet is not None:
+                fingerprints["p5_catalog_labels_sha256"] = hashlib.sha256("\n".join(sorted(sources)).encode("utf-8")).hexdigest()
+                if phd_alphabet_sha256 is not None:
+                    fingerprints["alphabet_sha256"] = phd_alphabet_sha256
+            catalog = DatasetCatalog(name, "image", sources, fingerprints=fingerprints)
+            catalog.image_protocol = "stable_hash"
+            return catalog
         data_root = root / "PHD08" if (root / "PHD08").is_dir() else root
         class_dirs = sorted(
             (path for path in data_root.iterdir() if path.is_dir()),
@@ -451,24 +588,44 @@ def load_catalog(
         return catalog
 
     if name == "kor_synthetic":
-        class_root = root / "retrieve_mtr_per_class" if (root / "retrieve_mtr_per_class").is_dir() else root
+        parquet_manifest = _read_parquet_dataset_manifest(root, "kor_synthetic")
         alphabet, alphabet_sha256 = load_kor_alphabet(root)
-        class_dirs = sorted((item for item in class_root.iterdir() if item.is_dir()), key=lambda item: int(item.name))
-        folder_ids = [int(path.name) for path in class_dirs]
-        if len(folder_ids) != len(set(folder_ids)):
-            raise ValueError("KorSynthetic folders must have unique numeric indices")
-        if set(folder_ids) != set(range(len(alphabet))):
-            raise ValueError("KorSynthetic folder indices must cover the alphabet positions exactly")
         sources = {}
-        for path in class_dirs:
-            class_index = int(path.name)
-            if class_index >= len(alphabet):
-                raise ValueError(f"No alphabet symbol for KorSynthetic folder {path.name}")
-            label = alphabet[class_index]
-            if hangul_only and not (0xAC00 <= ord(label) <= 0xD7A3):
-                continue
-            sources[label] = ClassSource(label, "kor_synthetic", folder=path)
-        folder_hash = hashlib.sha256("\n".join(path.name for path in class_dirs).encode("utf-8")).hexdigest()
+        if parquet_manifest is not None:
+            files_by_class = _parquet_class_files(root, parquet_manifest)
+            folder_ids = sorted((int(value) for value in parquet_manifest.get("class_indices", [])))
+            if len(folder_ids) != len(set(folder_ids)) or any(index < 0 or index >= len(alphabet) for index in folder_ids):
+                raise ValueError("KorSynthetic Parquet manifest has invalid class indices")
+            if not parquet_manifest.get("partial_dataset", False) and folder_ids != list(range(len(alphabet))):
+                raise ValueError("Complete KorSynthetic Parquet catalog must contain every alphabet index")
+            for class_index in folder_ids:
+                if str(class_index) not in files_by_class:
+                    raise ValueError(f"KorSynthetic Parquet manifest has no files for class {class_index}")
+                label = alphabet[class_index]
+                if hangul_only and not (0xAC00 <= ord(label) <= 0xD7A3):
+                    continue
+                sources[label] = ClassSource(
+                    label, "kor_synthetic", parquet_files=files_by_class[str(class_index)],
+                    uid_prefix=label,
+                )
+        else:
+            class_root = _numeric_class_root(root)
+            class_dirs = sorted((item for item in class_root.iterdir() if item.is_dir()), key=lambda item: int(item.name))
+            folder_ids = [int(path.name) for path in class_dirs]
+            if len(folder_ids) != len(set(folder_ids)):
+                raise ValueError("KorSynthetic folders must have unique numeric indices")
+            if set(folder_ids) != set(range(len(alphabet))):
+                raise ValueError("KorSynthetic folders must cover the alphabet positions exactly")
+            for path in class_dirs:
+                class_index = int(path.name)
+                if class_index >= len(alphabet):
+                    raise ValueError(f"No alphabet symbol for KorSynthetic folder {path.name}")
+                label = alphabet[class_index]
+                if hangul_only and not (0xAC00 <= ord(label) <= 0xD7A3):
+                    continue
+                sources[label] = ClassSource(label, "kor_synthetic", folder=path)
+        folder_names = [str(value) for value in sorted(int(index) for index in (parquet_manifest.get("class_indices", []) if parquet_manifest else folder_ids))]
+        folder_hash = hashlib.sha256("\n".join(folder_names).encode("utf-8")).hexdigest()
         catalog = DatasetCatalog(name, "kor_synthetic", sources, fingerprints={
             "alphabet_sha256": alphabet_sha256,
             "class_folder_names_sha256": folder_hash,
@@ -496,6 +653,7 @@ class SampleDataset(Dataset):
             image_ops.append(transforms.Normalize(mean=image_mean, std=image_std))
         self.image_transform = transforms.Compose(image_ops)
         self._background_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._parquet_row_group_cache: OrderedDict[tuple[str, int], object] = OrderedDict()
 
     def __len__(self):
         return 1
@@ -509,28 +667,67 @@ class SampleDataset(Dataset):
 
     def _load_image(self, ref: SampleRef) -> torch.Tensor:
         if self.catalog.modality == "kor_synthetic":
-            with open(ref.value, "r", encoding="utf-8") as stream:
-                source = json.load(stream)
-            mask = torch.as_tensor(source[1]["data"], dtype=torch.float32).reshape(1, 37, 37)
+            if ref.parquet_path is not None:
+                source = self._parquet_row(ref)
+                mask_values = source["mask"]
+            else:
+                with open(ref.value, "r", encoding="utf-8") as stream:
+                    source = json.load(stream)
+                mask_values = source[1]["data"]
+            mask = torch.as_tensor(mask_values, dtype=torch.float32).reshape(1, 37, 37)
             background_rng = random
             if self.background_seed is not None:
                 digest = hashlib.blake2b(
                     f"{self.background_seed}:{ref.uid}".encode("utf-8"), digest_size=8
                 ).digest()
                 background_rng = random.Random(int.from_bytes(digest, "little"))
-            background_path = self.catalog.random_kor_background(background_rng, self.background_labels)
-            if background_path not in self._background_cache:
-                with open(background_path, "r", encoding="utf-8") as stream:
-                    background_data = json.load(stream)
-                self._background_cache[background_path] = torch.as_tensor(background_data[0]["data"], dtype=torch.float32).reshape(1, 37, 37)
+            background_ref = self.catalog.random_kor_background(background_rng, self.background_labels)
+            cache_key = background_ref.uid
+            if cache_key not in self._background_cache:
+                if background_ref.parquet_path is not None:
+                    background_data = self._parquet_row(background_ref)["background"]
+                else:
+                    with open(background_ref.value, "r", encoding="utf-8") as stream:
+                        background_data = json.load(stream)[0]["data"]
+                self._background_cache[cache_key] = torch.as_tensor(background_data, dtype=torch.float32).reshape(1, 37, 37)
                 while len(self._background_cache) > 64:
                     self._background_cache.popitem(last=False)
-            image = self._background_cache[background_path] * mask
+            image = self._background_cache[cache_key] * mask
             return image.expand(3, -1, -1) if self.image_channels == 3 else image
+
+        if ref.parquet_path is not None:
+            image_data = self._parquet_row(ref)["image"]
+            encoded = image_data.get("bytes") if isinstance(image_data, dict) else image_data
+            if encoded is None:
+                raise ValueError(f"Parquet image row has no embedded bytes: {ref.uid}")
+            with Image.open(io.BytesIO(encoded)) as image_file:
+                image = image_file.convert("L" if self.image_channels == 1 else "RGB")
+                return self.image_transform(image)
 
         with Image.open(ref.value) as image_file:
             image = image_file.convert("L" if self.image_channels == 1 else "RGB")
             return self.image_transform(image)
+
+    def _parquet_row(self, ref: SampleRef) -> dict:
+        if ref.parquet_path is None or ref.parquet_row_group is None or ref.parquet_row_offset is None:
+            raise ValueError(f"Incomplete Parquet row reference for {ref.uid}")
+        key = (ref.parquet_path, ref.parquet_row_group)
+        if key in self._parquet_row_group_cache:
+            self._parquet_row_group_cache.move_to_end(key)
+            table = self._parquet_row_group_cache[key]
+        else:
+            try:
+                import pyarrow.parquet as pq
+            except ImportError as exc:
+                raise RuntimeError("Reading Parquet datasets requires pyarrow; install requirements-experiments.txt") from exc
+            table = pq.ParquetFile(ref.parquet_path).read_row_group(ref.parquet_row_group)
+            self._parquet_row_group_cache[key] = table
+            while len(self._parquet_row_group_cache) > 16:
+                self._parquet_row_group_cache.popitem(last=False)
+        return {
+            name: table.column(name)[ref.parquet_row_offset].as_py()
+            for name in table.column_names
+        }
 
 
 def collate_samples(batch: list[dict]) -> dict:

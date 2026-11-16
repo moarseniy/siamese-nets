@@ -8987,7 +8987,7 @@
       "errors": []
     },
     "kor_synthetic_alignment": {
-      "method": "folder index -> kor_101_mfcr alphabet at the same position",
+      "method": "folder index -> same-position symbol in alphabet.json or kor_101_mfcr.json",
       "p5_class_count": 2350,
       "alphabet_sha256": "e2a8b02967ee4e623e569e02c3fa073a55a197d8f85700fe3510537484778fc2",
       "all_indices_present_in_kor_synthetic": true
