@@ -26,7 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from phd08_protocol import phd08_family_id
 
 
-FORMAT = "siamese-nets-parquet-v1"
+FORMAT_BY_DATASET = {
+    "phd08": "siamese-nets-parquet-v1",
+    "kor_synthetic": "siamese-nets-parquet-v2",
+}
 DEFAULT_ROWS_PER_SHARD = 5_000
 DEFAULT_ROW_GROUP_SIZE = 100
 DEFAULT_WORKERS = max(1, min(8, os.cpu_count() or 1))
@@ -120,6 +123,7 @@ def _pyarrow_schema(dataset: str, preview_images: bool = False) -> pa.Schema:
         ])
     array = pa.list_(pa.float32(), 37 * 37)
     kor_fields = [
+        pa.field("source_json", pa.binary(), nullable=False),
         pa.field("background", array, nullable=False),
         pa.field("mask", array, nullable=False),
         pa.field("shape", pa.list_(pa.int16(), 3), nullable=False),
@@ -137,7 +141,8 @@ def _pyarrow_schema(dataset: str, preview_images: bool = False) -> pa.Schema:
 
 
 def _kor_row(class_index: int, symbol: str, path: Path, preview_images: bool) -> dict:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    source_json = path.read_bytes()
+    payload = json.loads(source_json)
     if len(payload) < 4:
         raise ValueError(f"KorSynthetic sample has fewer than four records: {path}")
     background, mask, markup, symbol_record = payload[:4]
@@ -158,6 +163,7 @@ def _kor_row(class_index: int, symbol: str, path: Path, preview_images: bool) ->
         "class_index": class_index,
         "symbol": symbol,
         "filename": path.name,
+        "source_json": source_json,
         "background": [float(value) for value in background["data"]],
         "mask": [float(value) for value in mask["data"]],
         "shape": [int(value) for value in background["shape"]],
@@ -191,6 +197,8 @@ def _kor_hf_features(preview_images: bool) -> str:
     dtype: string
   - name: filename
     dtype: string
+  - name: source_json
+    dtype: binary
   - name: background
     list: float32
     length: 1369
@@ -339,7 +347,7 @@ def _write_readme(output: Path, dataset: str, preview_images: bool = False) -> N
     dtype: image
 '''
     else:
-        description = '''Each row stores the original 37×37 float32 background and mask arrays from one KorSynthetic JSON sample, plus original class index, Hangul symbol, sample filename and remaining source metadata. Training code samples a background and multiplies it by the mask; the arrays are kept separate to preserve that behavior.'''
+        description = '''Each row stores the original JSON file bytes in `source_json` for byte-exact restoration, plus typed float32 background and mask arrays used by training. The arrays are kept separate because training samples a background and multiplies it by the mask.'''
         if preview_images:
             description += " The optional `preview_image` is a static visualization using this sample's own background; it is not the randomized training composite."
         features = _kor_hf_features(preview_images)
@@ -388,6 +396,7 @@ def main() -> None:
         parser.error("--preview-images is only for KorSynthetic; PHD08 already stores its PNG images")
     source_root = args.root.expanduser().resolve()
     output = args.output.expanduser().resolve()
+    output_format = FORMAT_BY_DATASET[args.dataset]
     if source_root == output or source_root in output.parents:
         parser.error("--output must not be inside the source directory")
     output.mkdir(parents=True, exist_ok=True)
@@ -399,7 +408,8 @@ def main() -> None:
         parser.error("An interrupted conversion exists here; rerun with --resume or choose another --output")
     if state_meta_path.exists():
         state_meta = json.loads(state_meta_path.read_text(encoding="utf-8"))
-        if (state_meta.get("dataset") != args.dataset or
+        if (state_meta.get("format") != output_format or
+                state_meta.get("dataset") != args.dataset or
                 Path(state_meta.get("source_root", "")).resolve() != source_root or
                 state_meta.get("selected_class_ids") != (sorted(selected) if selected is not None else None) or
                 state_meta.get("rows_per_shard") != args.rows_per_shard or
@@ -411,6 +421,7 @@ def main() -> None:
         parser.error("Output directory is not empty; choose a new directory or use --resume")
     else:
         state_meta_path.write_text(json.dumps({
+            "format": output_format,
             "dataset": args.dataset,
             "source_root": str(source_root),
             "selected_class_ids": sorted(selected) if selected is not None else None,
@@ -455,7 +466,8 @@ def main() -> None:
         existing_manifest = json.loads(existing_manifest_path.read_text(encoding="utf-8"))
         existing_ids = sorted(int(value) for value in existing_manifest.get("class_indices", []))
         requested_ids = sorted(int(path.name) for path in class_dirs)
-        if (existing_manifest.get("dataset") != args.dataset or existing_ids != requested_ids or
+        if (existing_manifest.get("format") != output_format or
+                existing_manifest.get("dataset") != args.dataset or existing_ids != requested_ids or
                 existing_manifest.get("rows_per_shard_limit") != args.rows_per_shard or
                 existing_manifest.get("row_group_size") != args.row_group_size or
                 existing_manifest.get("compression") != args.compression or
@@ -535,9 +547,9 @@ def main() -> None:
     class_files = {str(index): class_files[str(index)] for index in ordered_indices}
     class_sample_counts = {str(index): class_sample_counts[str(index)] for index in ordered_indices}
     manifest = {
-        "format": FORMAT,
+        "format": output_format,
         "dataset": args.dataset,
-        "schema_version": 1,
+        "schema_version": 2 if args.dataset == "kor_synthetic" else 1,
         "source_layout": str(class_root.name),
         "class_root_relative": "" if class_root.resolve() == source_root else str(class_root.resolve().relative_to(source_root)),
         "class_indices": ordered_indices,

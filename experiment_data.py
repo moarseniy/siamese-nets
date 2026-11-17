@@ -25,6 +25,7 @@ from phd08_protocol import phd08_family_id, phd08_family_splits
 
 
 Modality = Literal["image", "text", "kor_synthetic"]
+SUPPORTED_PARQUET_FORMATS = {"siamese-nets-parquet-v1", "siamese-nets-parquet-v2"}
 
 
 def stable_bucket(value: str, seed: int) -> int:
@@ -431,7 +432,7 @@ def _read_parquet_dataset_manifest(root: Path, dataset: str) -> dict | None:
     if not manifest_path.is_file():
         return None
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if payload.get("format") != "siamese-nets-parquet-v1":
+    if payload.get("format") not in SUPPORTED_PARQUET_FORMATS:
         return None
     if payload.get("dataset") != dataset:
         raise ValueError(f"Parquet manifest at {root} is for {payload.get('dataset')!r}, not {dataset!r}")

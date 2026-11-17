@@ -12,7 +12,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 
-FORMAT = "siamese-nets-parquet-v1"
+SUPPORTED_FORMATS = {"siamese-nets-parquet-v1", "siamese-nets-parquet-v2"}
 STATE_DIRNAME = ".restore_state"
 DEFAULT_WORKERS = max(1, min(8, os.cpu_count() or 1))
 
@@ -94,7 +94,7 @@ def main() -> None:
     if not manifest_path.is_file():
         parser.error(f"Missing Parquet dataset manifest: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("format") != FORMAT or manifest.get("dataset") != args.dataset:
+    if manifest.get("format") not in SUPPORTED_FORMATS or manifest.get("dataset") != args.dataset:
         parser.error("Parquet manifest format/dataset does not match --dataset")
     class_files = manifest.get("class_files")
     if not isinstance(class_files, dict) or not class_files:
