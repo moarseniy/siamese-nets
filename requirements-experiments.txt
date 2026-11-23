@@ -1,10 +1,14 @@
-# Install the Blackwell PyTorch wheels separately as described in
-# experiments/README.md. These are the non-PyTorch experiment dependencies.
+# Complete environment for the experiment launcher (Python 3.13.6, CUDA 13.0).
+--extra-index-url https://download.pytorch.org/whl/cu130
+
+torch==2.14.1+cu130
+torchvision==0.29.1+cu130
 numpy==2.2.6
 pyarrow==20.0.0
 Pillow==11.1.0
 scikit-learn==1.6.1
-sentence-transformers==4.1.0
-transformers==5.5.4
+transformers==5.10.1
 tqdm==4.67.1
 ujson==5.10.0
+matplotlib==3.10.1
+psutil==7.0.0

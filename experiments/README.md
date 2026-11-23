@@ -13,26 +13,34 @@ PHD08 и KorSynthetic. Запускать их нужно одним спосо�
 
 ## Окружение для Blackwell
 
-Начальная конфигурация окружения: Python 3.11, PyTorch 2.15.0, TorchVision
-0.29.2 и стабильные пакеты CUDA 13.2. Сначала установи совместимые пакеты PyTorch
-и TorchVision, затем остальные зависимости:
+Начальная конфигурация окружения: Python 3.13.6, PyTorch 2.14.1, TorchVision
+0.29.1 и стабильные пакеты CUDA 13.0. Все зависимости устанавливаются из одного
+файла:
 
 ```bash
-python3.11 -m venv .venv-blackwell
+python3.13 --version  # ожидается Python 3.13.6
+python3.13 -m venv .venv-blackwell
 source .venv-blackwell/bin/activate
 python -m pip install --upgrade pip
-python -m pip install torch==2.15.0 torchvision==0.29.2 \
-  --index-url https://download.pytorch.org/whl/cu132
 python -m pip install -r requirements-experiments.txt
 ```
 
-Драйвер NVIDIA на машине должен поддерживать CUDA 13.2; минимальная версия
-драйвера для Linux, указанная NVIDIA, — 595.45.04. CUDA runtime входит в пакет
-PyTorch, поэтому отдельно устанавливать CUDA Toolkit нужно только для сборки
-собственных расширений CUDA. См. [описание стабильных пакетов CUDA 13.2 для
-PyTorch 2.15](https://github.com/pytorch/pytorch/blob/main/RELEASE.md),
-[совместимость TorchVision 0.29.2](https://github.com/pytorch/vision/releases) и
-[требования NVIDIA к драйверу CUDA 13.2](https://docs.nvidia.com/cuda/archive/13.2.0/cuda-toolkit-release-notes/).
+Для изолированной машины на совместимом компьютере с интернетом сначала скачай
+все пакеты и их зависимости, затем перенеси каталог `wheelhouse` и установи их
+без доступа к сети:
+
+```bash
+python3.13 -m pip download --only-binary=:all: --dest wheelhouse -r requirements-experiments.txt
+python -m pip install --no-index --find-links /путь/к/wheelhouse -r requirements-experiments.txt
+```
+
+Для CLINC MiniLM загружается через Transformers; пакет `sentence-transformers`
+для экспериментальных конфигов не требуется.
+
+CUDA runtime входит в зависимости PyTorch, поэтому отдельно устанавливать CUDA
+Toolkit нужно только для сборки собственных расширений CUDA. См. [пакеты PyTorch
+2.14.1 и TorchVision 0.29.1](https://pytorch.org/get-started/previous-versions/) и
+[требования NVIDIA к драйверу CUDA 13.0](https://docs.nvidia.com/cuda/archive/13.0.2/cuda-toolkit-release-notes/).
 
 Перед долгим запуском проверь вычислительную машину:
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -165,7 +166,7 @@ def main() -> None:
 
     if matrix_mode:
         default_stage = args.stage or "development"
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + f"_{os.getpid()}"
         output_dir = _repo_path(args.output_dir) if args.output_dir else REPO_ROOT / "experiments" / "jobs" / f"{config_path.stem}_{default_stage}_{stamp}"
         seed_values = args.seeds or str(args.seed if args.seed is not None else config.get("seed", 20261113))
         loss_values = args.losses or config.get("loss", {}).get("type", "catml")
@@ -214,7 +215,7 @@ def main() -> None:
     if args.run_test and not config.get("test"):
         parser.error("this config has no test section")
     if inference_only:
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + f"_{os.getpid()}"
         output_path = _repo_path(args.output) if args.output else (
             REPO_ROOT / "experiments" / "runs" / config_path.stem / f"{args.split}_{stamp}.json"
         )
@@ -230,7 +231,7 @@ def main() -> None:
             command.extend(("--checkpoint", str(_repo_path(args.checkpoint))))
     else:
         seed = int(config.get("seed", 20261113))
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + f"_{os.getpid()}"
         output_dir = _repo_path(args.output) if args.output else (
             REPO_ROOT / "experiments" / "runs" / config_path.stem / f"seed{seed}_{stamp}"
         )

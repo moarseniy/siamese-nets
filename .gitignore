@@ -5,6 +5,7 @@ venv/
 __pycache__/
 experiments/runs/
 experiments/jobs/
+experiments/results.csv
 *.py[cod]
 *$py.class
 
