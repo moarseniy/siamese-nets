@@ -38,7 +38,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Create an experiment job matrix")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--cross-entropy-config", type=Path, help="Second base config used for the cross-entropy row in --phd08-baseline mode")
-    parser.add_argument("--phd08-baseline", action="store_true", help="Use the fixed eight-row PHD08 comparison matrix")
+    parser.add_argument("--phd08-baseline", "--baseline", dest="phd08_baseline", action="store_true", help="Use the fixed eight-row comparison matrix")
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--eval-data-root", type=Path, help="Second dataset root for cross-domain evaluation configs")
     parser.add_argument("--models-dir", type=Path, help="Local model repository folders and TorchVision weights")
@@ -87,8 +87,8 @@ def main() -> None:
     if cross_entropy_base is not None:
         cross_entropy_base = prepare_base(cross_entropy_base, args.cross_entropy_config)
     if args.phd08_baseline:
-        if base.get("dataset") not in ("phd08", "kor_synthetic") or base.get("task") != "metric":
-            parser.error("--phd08-baseline needs a metric config for phd08 or kor_synthetic")
+        if base.get("task") != "metric":
+            parser.error("--baseline needs a metric config")
         if cross_entropy_base.get("dataset") != base.get("dataset"):
             parser.error("The metric and cross-entropy configs must use the same training dataset")
         if cross_entropy_base.get("loss", {}).get("type") != "cross_entropy":
@@ -143,10 +143,9 @@ def main() -> None:
                     config["loss"].setdefault("temperature", 0.07)
                 if selector is not None:
                     config["sampler"]["positive"], config["sampler"]["negative"] = SELECTORS[selector]
-                if selector == "apm":
-                    config["sampler"]["apm_gamma"] = 1.0
-                elif selector == "apm_auto":
-                    config["sampler"]["apm_gamma"] = 2.0
+                if selector in ("apm", "apm_auto"):
+                    # Keep APM's exponent fixed when isolating Auto-clustering.
+                    config["sampler"].setdefault("apm_gamma", 1.0)
                 config["training"]["examples_per_class"] = None if budget == "all" else int(budget)
                 if budget != "all":
                     config["sampler"]["samples_per_class"] = min(

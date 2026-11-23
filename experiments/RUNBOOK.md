@@ -1,10 +1,9 @@
 # Единый запуск экспериментов
 
-Все эксперименты запускаются одной командой — `scripts/launch_experiment.py`.
-Она выбирает конфиг, автоматически подставляет корень данных, создаёт папку
-результатов и начинает обучение. Для матрицы начальных значений генератора,
-функций потерь и способов выборки тот же сценарий сам создаёт и запускает
-задания; вручную вызывать `run.sh` не нужно.
+Параллельные очереди для основных серий запускаются через
+`scripts/run_experiment_batch.py`; старый `scripts/launch_experiment.py`
+остаётся доступен для одиночных запусков и последовательных матриц.
+Обе команды выбирают конфиги и создают каталоги результатов.
 
 В тексте ниже «обучение», «проверка» и «итоговая оценка» соответствуют разделам
 `validation` и `test` в конфигах. Имена параметров и режимов в командах оставлены
@@ -34,6 +33,72 @@ export MODEL_DIR=/mnt/pretrained-models  # замени на фактическ�
 `models--<организация>--<репозиторий>/snapshots/<ревизия>`. Веса TorchVision должны
 лежать в `torchvision/checkpoints/`. Когда передан `--models-dir`, сценарий запуска
 использует только локальные файлы и сообщает об ошибке, если модель не найдена.
+
+## Очередь для всех датасетов
+
+Общий launcher поддерживает PHD08 и HangulPrinted/KorSynthetic, Omniglot,
+CUB-200-2011 и CLINC150. Указывай корень конкретного датасета в `--data-root`;
+для P5 это PHD08, а HangulPrinted/KorSynthetic передаётся отдельно в `--kor-root`.
+Настройки `--gpus`, `--workers-per-gpu`, `--seeds`, `--epochs`,
+`--steps-per-epoch`, `--dry-run`, `--status` и `--retry-failed` работают так же,
+как в очереди PHD08 ниже. Разные очереди между собой GPU не координируют.
+
+| Датасет | Серии | Что делает очередь |
+|---|---|---|
+| PHD08 | `p1,p2,p3,p4,p5` по отдельности | P1/P2: известные классы; P3: retrieval; P4: оценка checkpoint P3; P5: HangulPrinted → PHD08 |
+| Omniglot | `o1,o2,o3` можно объединить; `o4` и `o5` отдельно | Closed-set full/5/10, retrieval, few-shot и отдельная run-folder one-shot серия |
+| CUB | `c1,c2,c3` можно объединить; `c4` отдельно | Retrieval, closed-set full/5/10 и few-shot |
+| CLINC150 | `l1,l2,l3,l5,l6` можно объединить; `l4` отдельно | Closed-set full/5/10, retrieval, open-set и замороженный MiniLM |
+
+Для Omniglot/CUB/CLINC реализованная базовая матрица включает четыре варианта
+CATML, три варианта Triplet и Cross-entropy. Closed-set конфиги метрического
+обучения и retrieval-вариант Cross-entropy генерируются из конфигов проекта;
+их нужно сначала проверить пилотом. Выбор checkpoint для closed-set ведётся по
+accuracy ближайшего эталона; в Cross-entropy дополнительно сохраняется accuracy
+классификационной головы. `l5` обучает отдельные модели для open-set и калибрует
+порог на validation; `l6` оценивает замороженный MiniLM без обучения.
+
+Например, один seed по всем основным обучающим сериям Omniglot — 32 задания:
+
+```bash
+python scripts/run_experiment_batch.py \
+  --series o1,o2,o3 --phase development \
+  --data-root /путь/к/omniglot --models-dir "$MODEL_DIR" \
+  --seeds 1 --gpus 0 --workers-per-gpu 2
+```
+
+Для CUB используй `--series c1,c2,c3`; доступен `--backbone resnet50` или `vit`.
+Для CLINC — `--series l1,l2,l3,l5,l6`, `--backbone roberta` или `minilm`;
+`l6` всегда использует замороженный MiniLM. Готовность pretrained-весов и бюджет
+конфигов нужно проверить на вычислительной машине. При `--phase final` включается
+test; в retrieval итоговая модель обучается на train+validation классах.
+
+Few-shot серии используют завершённые retrieval-модели той же фазы:
+
+```bash
+python scripts/run_experiment_batch.py \
+  --series o4 --phase development \
+  --data-root /путь/к/omniglot --models-dir "$MODEL_DIR" \
+  --source-batch experiments/jobs/omniglot_batch_o1_o2_o3_development_resnet18 \
+  --gpus 0
+```
+
+Аналогично C4 берёт C1, L4 — L3, P4 — P3. Для final укажи завершённую финальную
+очередь и `--phase final`. Проверка CUB few-shot validation делит официальные
+train-изображения класса на пять query и остальные support, без пересечения;
+test использует официальные test-изображения. O5 запускается только в final и
+ожидает `all_runs` (или явный `--oneshot-root`); соответствие этих заданий точному
+официальному протоколу ещё не подтверждено.
+
+В новой матрице обе APM-строки используют одинаковый `apm_gamma=1` по умолчанию,
+чтобы сравнение с/без Auto-clustering не меняло одновременно степень APM. Ранее
+сформированные очереди не изменяются и могут иметь `apm_gamma=2` для `apm_auto`;
+не смешивай их без проверки конфига и колонки CSV. Для новой версии используй
+новый `--output-dir`.
+
+Полный текст исследовательских планов также включает PFML, Proxy-AN, обучаемый
+ProtoNet, расширенные селекторы и другие абляции, которых в этой очереди нет.
+Необучаемый ближайший прототип не является обучаемым ProtoNet.
 
 ## Главное правило
 

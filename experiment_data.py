@@ -214,6 +214,16 @@ class ClassSource:
             return tuple(record for record in records if record.source_split == wanted)
 
         if protocol == "cub200_class_disjoint":
+            if split in ("fewshot_val_support", "fewshot_val_query"):
+                # Reserve five official-train images for validation queries;
+                # support comes from the remaining images of the same class.
+                ordered = sorted(
+                    (record for record in records if self.image_split_file.get(record.uid) == "train"),
+                    key=lambda record: (stable_bucket(record.uid, seed), record.uid),
+                )
+                if len(ordered) < 10:
+                    raise ValueError(f"CUB class {self.label!r} needs at least 10 official-train images for 5-shot validation")
+                return tuple(ordered[5:] if split == "fewshot_val_support" else ordered[:5])
             if split in ("gallery", "train"):
                 return tuple(record for record in records if self.image_split_file.get(record.uid) == "train")
             if split in ("query", "test"):

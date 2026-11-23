@@ -43,18 +43,23 @@ def save_state(path: Path, state: dict) -> None:
 
 def prepare_matrix(out: Path, metric: str, ce: str, data: Path, models: Path,
                    seeds: str, budgets: str, phase: str, epochs: int | None,
-                   steps: int | None, eval_data: Path | None = None) -> list[dict]:
+                   steps: int | None, eval_data: Path | None = None,
+                   final_retrieval: bool = False) -> list[dict]:
+    def config_file(value: str | Path) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() else CONFIGS / f"{value}.json"
+
     command = [
         sys.executable, str(ROOT / "scripts" / "run_matrix.py"),
-        "--config", str(CONFIGS / f"{metric}.json"),
-        "--cross-entropy-config", str(CONFIGS / f"{ce}.json"), "--phd08-baseline",
+        "--config", str(config_file(metric)),
+        "--cross-entropy-config", str(config_file(ce)), "--phd08-baseline",
         "--data-root", str(data), "--models-dir", str(models), "--output-dir", str(out),
         "--seeds", seeds, "--examples-per-class", budgets,
     ]
     # Final class-disjoint P3 retrains on train+validation classes; other tasks
     # retain validation for checkpoint selection and only add test afterwards.
     if phase == "final":
-        if metric == "phd08_metric_dev":
+        if metric == "phd08_metric_dev" or final_retrieval:
             command += ["--stage", "final"]
         command.append("--run-test")
     if eval_data is not None:
@@ -147,6 +152,22 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
+def missing_outputs(job: dict, attempt: dict) -> list[str]:
+    output = Path(attempt["output"])
+    if job["kind"] == "evaluation":
+        try:
+            result = json.loads(output.read_text(encoding="utf-8"))
+            if isinstance(result, dict) and isinstance(result.get("metrics"), dict):
+                return []
+        except (OSError, ValueError):
+            pass
+        return [str(output)]
+    required = [output / "resolved_config.json", output / "metrics.jsonl", output / "last.pt"]
+    if "--run-test" in attempt["command"]:
+        required.append(output / "test_metrics.json")
+    return [str(path) for path in required if not path.is_file()]
+
+
 def execute(state: dict, state_path: Path, slots: list[str], retry_failed: bool) -> int:
     for job in state["jobs"]:
         if job["status"] == "running":
@@ -206,6 +227,11 @@ def execute(state: dict, state_path: Path, slots: list[str], retry_failed: bool)
                 returncode = proc.poll()
                 if returncode is None:
                     continue
+                if returncode == 0:
+                    missing = missing_outputs(job, attempt)
+                    if missing:
+                        log.write("\nWorker exited successfully but required results are missing: " + ", ".join(missing) + "\n")
+                        returncode = 1
                 log.close()
                 free.append(gpu)
                 attempt.update(status="completed" if returncode == 0 else "failed", ended_at=now(), returncode=returncode)

@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ROOTS = (REPO_ROOT / "experiments" / "runs", REPO_ROOT / "experiments" / "jobs")
 BASE_FIELDS = (
     "source", "record_type", "split", "status", "epoch", "dataset", "protocol", "train_class_key",
-    "seed", "loss", "positive_sampler", "negative_sampler", "backbone", "model_revision",
+    "seed", "loss", "positive_sampler", "negative_sampler", "apm_gamma", "cluster_fraction", "cluster_update_steps", "backbone", "model_revision",
     "examples_per_class", "planned_epochs", "steps_per_epoch", "learning_rate", "precision",
     "gpu", "torch_version", "cuda_version", "primary_metric", "checkpoint",
 )
@@ -67,6 +67,9 @@ def metadata(config: dict) -> dict:
         "loss": (config.get("loss") or {}).get("type"),
         "positive_sampler": sampler.get("positive"),
         "negative_sampler": sampler.get("negative"),
+        "apm_gamma": sampler.get("apm_gamma"),
+        "cluster_fraction": sampler.get("cluster_fraction"),
+        "cluster_update_steps": sampler.get("cluster_update_steps"),
         "backbone": model.get("backbone") or model.get("model_name"),
         "model_revision": model.get("revision"),
         "examples_per_class": training.get("examples_per_class", "all"),
@@ -91,6 +94,8 @@ def checkpoint_metadata(checkpoint: str | None) -> dict:
     return {
         "training.seed": info["seed"], "loss": info["loss"],
         "positive_sampler": info["positive_sampler"], "negative_sampler": info["negative_sampler"],
+        "apm_gamma": info["apm_gamma"], "cluster_fraction": info["cluster_fraction"],
+        "cluster_update_steps": info["cluster_update_steps"],
         "backbone": info["backbone"], "training.examples_per_class": info["examples_per_class"],
     }
 
@@ -185,7 +190,7 @@ def batch_rows(path: Path) -> list[dict]:
                 "source": source_path(Path(source)), "record_type": "batch_job",
                 **metadata(config), **checkpoint_metadata(checkpoint), "checkpoint": checkpoint,
                 "status": attempt.get("status", job.get("status")),
-                "batch.name": settings.get("batch"), "batch.phase": settings.get("phase"),
+                "batch.name": settings.get("batch") or settings.get("series"), "batch.phase": settings.get("phase"),
                 "batch.job_id": job.get("id"), "batch.attempt": attempt.get("number"),
                 "batch.gpu": attempt.get("gpu"), "batch.started_at": attempt.get("started_at"),
                 "batch.ended_at": attempt.get("ended_at"), "batch.returncode": attempt.get("returncode"),
