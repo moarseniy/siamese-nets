@@ -6,6 +6,7 @@ __pycache__/
 experiments/runs/
 experiments/jobs/
 experiments/results.csv
+experiments/results.csv.lock
 *.py[cod]
 *$py.class
 

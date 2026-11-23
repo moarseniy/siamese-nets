@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import json
 import os
 import sys
@@ -15,7 +16,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ROOTS = (REPO_ROOT / "experiments" / "runs", REPO_ROOT / "experiments" / "jobs")
 BASE_FIELDS = (
-    "source", "record_type", "split", "epoch", "dataset", "protocol", "train_class_key",
+    "source", "record_type", "split", "status", "epoch", "dataset", "protocol", "train_class_key",
     "seed", "loss", "positive_sampler", "negative_sampler", "backbone", "model_revision",
     "examples_per_class", "planned_epochs", "steps_per_epoch", "learning_rate", "precision",
     "gpu", "torch_version", "cuda_version", "primary_metric", "checkpoint",
@@ -80,6 +81,20 @@ def metadata(config: dict) -> dict:
     }
 
 
+def checkpoint_metadata(checkpoint: str | None) -> dict:
+    if not checkpoint or checkpoint == "pretrained-only":
+        return {}
+    config = read_json(Path(checkpoint).parent / "resolved_config.json")
+    if not config:
+        return {}
+    info = metadata(config)
+    return {
+        "training.seed": info["seed"], "loss": info["loss"],
+        "positive_sampler": info["positive_sampler"], "negative_sampler": info["negative_sampler"],
+        "backbone": info["backbone"], "training.examples_per_class": info["examples_per_class"],
+    }
+
+
 def training_rows(config_path: Path) -> list[dict]:
     config = read_json(config_path)
     if config is None:
@@ -127,19 +142,71 @@ def evaluation_row(path: Path) -> dict | None:
     config = read_json(config_path) if config_path.is_file() else None
     item = {
         "source": source_path(path), "record_type": "evaluation", "split": result["split"],
-        **metadata(config or {}), "checkpoint": result.get("checkpoint"),
+        **metadata(config or {}), **checkpoint_metadata(result.get("checkpoint")),
+        "checkpoint": result.get("checkpoint"),
     }
     item.update(flatten(result["split"], result["metrics"]))
     return item
 
 
-def collect(roots: list[Path], output: Path) -> int:
+def batch_rows(path: Path) -> list[dict]:
+    state = read_json(path)
+    if not state or not isinstance(state.get("jobs"), list) or not isinstance(state.get("settings"), dict):
+        return []
+    settings = state["settings"]
+    rows = []
+    for job in state["jobs"]:
+        if not isinstance(job, dict):
+            continue
+        command = job.get("command") or []
+        config = {}
+        if "--config" in command:
+            index = command.index("--config")
+            if index + 1 < len(command):
+                config = read_json(Path(command[index + 1])) or {}
+        checkpoint = None
+        if "--checkpoint" in command:
+            index = command.index("--checkpoint")
+            if index + 1 < len(command):
+                checkpoint = command[index + 1]
+        attempts = job.get("attempts") or [{}]
+        for attempt in attempts:
+            source = attempt.get("output") or str(path.parent)
+            error_tail = None
+            if attempt.get("status") == "failed" and attempt.get("log"):
+                try:
+                    with Path(attempt["log"]).open("rb") as stream:
+                        stream.seek(0, os.SEEK_END)
+                        stream.seek(max(0, stream.tell() - 8192))
+                        error_tail = "\n".join(stream.read().decode("utf-8", errors="replace").splitlines()[-15:])
+                except OSError:
+                    pass
+            row = {
+                "source": source_path(Path(source)), "record_type": "batch_job",
+                **metadata(config), **checkpoint_metadata(checkpoint), "checkpoint": checkpoint,
+                "status": attempt.get("status", job.get("status")),
+                "batch.name": settings.get("batch"), "batch.phase": settings.get("phase"),
+                "batch.job_id": job.get("id"), "batch.attempt": attempt.get("number"),
+                "batch.gpu": attempt.get("gpu"), "batch.started_at": attempt.get("started_at"),
+                "batch.ended_at": attempt.get("ended_at"), "batch.returncode": attempt.get("returncode"),
+                "batch.log": attempt.get("log"), "batch.error_tail": error_tail,
+            }
+            rows.append(row)
+    return rows
+
+
+def _collect(roots: list[Path], output: Path) -> int:
     rows = []
     seen_configs: set[Path] = set()
     seen_results: set[Path] = set()
     for root in roots:
         if not root.is_dir():
             continue
+        for state_path in sorted(root.rglob("batch_state.json")):
+            real_path = state_path.resolve()
+            if real_path not in seen_results:
+                seen_results.add(real_path)
+                rows.extend(batch_rows(state_path))
         for config_path in sorted(root.rglob("resolved_config.json")):
             real_path = config_path.resolve()
             if real_path not in seen_configs:
@@ -170,6 +237,16 @@ def collect(roots: list[Path], output: Path) -> int:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return len(rows)
+
+
+def collect(roots: list[Path], output: Path) -> int:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Multiple schedulers and a live watcher may refresh the same report.
+    # Serialize the entire snapshot so an older snapshot cannot overwrite a newer one.
+    lock_path = output.with_name(output.name + ".lock")
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _collect(roots, output)
 
 
 def main() -> None:
