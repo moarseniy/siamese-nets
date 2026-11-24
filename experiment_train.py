@@ -666,6 +666,7 @@ def run(
 
     all_label_ids = {name: index for index, name in enumerate(catalog.labels)}
     train_label_ids = {name: index for index, name in enumerate(train_classes)}
+    train_catalog_ids = torch.tensor([all_label_ids[label] for label in train_classes], device=device)
     sampler_config = config["sampler"]
     apm = None
     if sampler_config.get("positive", "random") == "apm":
@@ -977,6 +978,7 @@ def run(
 
         primary = config.get("validation", {}).get("primary_metric", "recall@1" if config["task"] == "metric" else "accuracy")
         score = float(validation[primary]) if primary in validation else -row["train_loss"]
+        epoch_centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
         checkpoint = {
             "epoch": epoch,
             "model": model.state_dict(),
@@ -987,6 +989,11 @@ def run(
             "scaler": scaler.state_dict(),
             "config": config,
             "class_labels": train_classes,
+            "ideals": {
+                "class_labels": list(train_classes),
+                "centers": epoch_centers.index_select(0, train_catalog_ids).detach().cpu(),
+                "counts": center_count.index_select(0, train_catalog_ids).to(torch.long).cpu(),
+            },
             "validation": validation,
             "apm": apm.state_dict() if apm is not None else None,
             "class_graph": class_graph.state_dict(),
