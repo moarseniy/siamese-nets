@@ -8,9 +8,8 @@ from pathlib import Path
 
 import torch
 
-from dataset import ExperimentSampleDataset as SampleDataset, load_experiment_catalog as load_catalog
-from model import build_experiment_encoder as build_encoder
-from experiment_models import configure_model_cache
+from experiment_data import SampleDataset, load_catalog
+from experiment_models import build_encoder, configure_model_cache
 from experiment_train import _load_config, _run_evaluation, set_seed
 
 

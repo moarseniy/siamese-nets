@@ -1,173 +1,102 @@
-# siamese-nets
+# PhD metric-learning experiments
 
-Код на PyTorch для обучения векторных представлений изображений с помощью
-триплетной и контрастивной функций потерь. Старая точка входа читает JSON-конфиг:
+This repository has one experiment implementation and one JSON schema. The
+runner reads configs from `experiments/configs/`, split definitions from
+`experiments/manifests/`, and implementation code from the `experiment_*`
+modules. Configs in any other schema are rejected; there is no legacy training
+path.
 
-```bash
-python train.py -c configs/kor_0.json
-```
+## Environment
 
-Для обучения нужна видеокарта NVIDIA с CUDA. Контрольные точки модели, графики и
-копия нормализованного конфига `common` сохраняются в `checkpoint_pt`.
-Старые конфиги из `configs/` преобразуются внутри `train.py`; новые эксперименты
-следует запускать через единый сценарий ниже.
-
-## Исследовательские эксперименты
-
-Для CLINC150, CUB-200-2011, Omniglot, PHD08 и KorSynthetic используй одну точку
-входа:
+Use Python 3.13.6 and install the pinned environment:
 
 ```bash
-python scripts/launch_experiment.py --config <имя-конфига> --models-dir <папка-с-моделями>
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-Сценарий запуска сам выбирает корень данных и папку результатов. Для нескольких
-начальных значений генератора случайных чисел, функций потерь или способов
-выбора примеров он создаёт и запускает матрицу
-заданий в том же вызове. Примеры и карта конфигов приведены в
-[руководстве по запуску](experiments/RUNBOOK.md). Конфиги находятся в
-`experiments/configs/`, разбиения данных — в `experiments/manifests/`.
+Training and evaluation require a CUDA GPU. Pretrained weights must be available
+locally when a config requests them. Pass `--models-dir` to select the root for
+TorchVision and Hugging Face assets.
 
-Планы исследований: [CLINC150](EXPERIMENT_PLAN_CLINC150.md),
-[CUB-200-2011](EXPERIMENT_PLAN_CUB.md), [Omniglot](EXPERIMENT_PLAN_OMNIGLOT.md)
-и [PHD08](EXPERIMENT_PLAN_PHD08.md).
+## One run
 
-### Термины в исследовательских планах
+Run one manifest config with an explicit output directory. Explicit paths keep
+data, weights, and results fixed and prevent accidental overwrite:
 
-- **Закрытый набор классов (`closed-set`)**: при оценке встречаются только
-  классы, известные модели во время обучения.
-- **Открытый набор (`open-set`)**: могут поступить объекты неизвестных классов;
-  система должна распознать известные классы и отказать для неизвестных.
-- **Поиск похожих объектов (`retrieval`)**: для запроса ищутся ближайшие
-  векторные представления в галерее. Это не то же самое, что классификация.
-- **Метрическое обучение (`metric learning`)**: модель учится строить векторы,
-  в которых расстояние отражает сходство объектов или совпадение их классов.
-- **Разделение по классам (`class-disjoint`)**: классы обучающей и оцениваемой
-  частей не пересекаются.
-- **Разделение по источникам или шрифтам (`source-disjoint`, `font-disjoint`)**:
-  изображения одной исходной коллекции или одного шрифта не попадают сразу в
-  обучение и итоговую оценку.
-- **Без примеров целевого класса при обучении (`zero-shot`)**: модель не
-  получала размеченных обучающих примеров этого класса. При поиске изображения
-  класса могут находиться в галерее для сравнения.
-- **Оценка по малому числу примеров (`few-shot`)**: после обучения для нового
-  класса предоставляются размеченные опорные примеры. В режиме `one-shot` такой
-  пример один.
-- Проверочная часть (`validation`) используется для выбора настроек и модели.
-  Итоговая часть (`test`) используется после фиксации настроек.
-- **Seed** — начальное значение генераторов случайных чисел, помогающее
-  повторить запуск.
-- **Базовая сеть (`backbone`)** — основная архитектура, извлекающая признаки;
-  поверх неё может добавляться небольшой проекционный слой.
-- **Эмбеддинг (`embedding`)** — векторное представление объекта, по которому
-  измеряют сходство и выбирают ближайшие примеры.
-- **Пакет (`batch`)** — группа примеров, обрабатываемая за один шаг обучения.
-- **Подбор сложных примеров (`mining`)** — выбор положительных и отрицательных
-  примеров, на которых модель должна учиться лучше различать классы.
-- **Сдвиг домена (`domain shift`)** — различие между обучающими и оцениваемыми
-  изображениями, например из-за разных источников или шрифтов.
-- **Галерея** — набор эталонных объектов для поиска; **запрос** — объект, для
-  которого ищется ближайший эталон; **опорный пример (`support`)** — размеченный
-  пример, разрешённый для ответа в few-shot задаче.
-- **`Recall@K`** — доля запросов, у которых правильный класс есть среди K
-  ближайших результатов. **EER** — порог, при котором частоты ложного принятия и
-  ложного отклонения равны; **AUROC** — площадь под ROC-кривой.
-- **`macro-F1`** — сначала F1 считается отдельно для каждого класса, затем
-  значения усредняются поровну. **MAP@R** усредняет точность ранжирования по
-  числу релевантных объектов каждого запроса.
-
-## Настройка старого способа выборки
-
-В старых конфигах тип функции потерь задаётся в `common.loss_settings.type`:
-`triplet` или `contrastive`. Для контрастивного обучения автоматически
-выбирается датасет пар. Метка пары бинарная: `0` означает один класс, `1` — разные
-классы. Параметр `gen_imp_ratio` задаёт вероятность сформировать положительную
-пару. В триплетном режиме каждый элемент содержит якорное, положительное и
-отрицательное изображения.
-
-Настройки выборки задаются отдельно для `train` и `test` в
-`common.batch_settings`:
-
-```json
-{
-  "train": {
-    "elements_per_batch": 256,
-    "iterations": 10,
-    "gen_imp_ratio": 0.3,
-    "positive_mode": "random",
-    "negative_mode": "hard",
-    "auto_clusters": {
-      "inner_imp_prob": 0.2,
-      "raw_clusters": 1000,
-      "cluster_max_size": 200,
-      "make_clust_on_ep": 1
-    }
-  }
-}
+```bash
+python train.py \
+  --config experiments/configs/phd08_metric_dev.json \
+  --data-root /path/to/PHD08_dataset \
+  --models-dir /path/to/models \
+  --output experiments/runs/phd08_metric_dev/seed1
 ```
 
-Поддерживаются следующие режимы выбора отрицательного примера:
+To run the configured test protocol after training, add `--run-test`. Resume a
+run with `--resume <run-dir>/last.pt`. Pretrained-only evaluation uses the same
+config and protocol:
 
-- `random`: равномерно выбрать другой класс, затем изображение из этого класса.
-- `hard` (также `batch_hard`): выбрать ближайшее подходящее отрицательное
-  векторное представление среди отрицательных примеров текущего пакета. Для пар
-  заменяется второе изображение отрицательной пары на ближайший пример другого
-  класса из этого пакета.
-- `semi_hard`: для триплета выбрать отрицательный пример, расстояние до которого
-  больше расстояния до положительного, но меньше этого расстояния плюс `margin`:
-  `d(anchor, positive) < d(anchor, negative) < d(anchor, positive) + margin`.
-  Если подходящего примера нет, берётся ближайший допустимый отрицательный. Для
-  контрастивной пары выбирается ближайший отрицательный пример внутри заданной
-  границы; если его нет — ближайший доступный.
-- `auto_clusters`: периодически находить близкие центры классов и с вероятностью
-  `inner_imp_prob` выбирать отрицательный пример из группы якорного класса; иначе
-  используется случайный выбор. Это выбор на уровне классов, а не отдельных
-  изображений. Требуется `save_ideals: true`.
-
-Настройки кластеризации можно вложить в `auto_clusters`, как в примере выше, или
-задать старыми плоскими полями конфига. Случайная и кластерная выборки поддерживают
-и пары, и триплеты. Режимы `hard` выбирают из примеров текущего пакета, поэтому с
-ростом пакета увеличивается пул кандидатов.
-
-Пример настройки контрастивного обучения:
-
-```json
-"loss_settings": { "type": "contrastive", "alpha_margin": 1.0 },
-"batch_settings": {
-  "train": {
-    "elements_per_batch": 256,
-    "iterations": 10,
-    "gen_imp_ratio": 0.5,
-    "positive_mode": "random",
-    "negative_mode": "random"
-  },
-  "test": {
-    "elements_per_batch": 256,
-    "iterations": 10,
-    "gen_imp_ratio": 0.5,
-    "positive_mode": "random",
-    "negative_mode": "random"
-  }
-}
+```bash
+python train.py \
+  --config experiments/configs/clinc150_sentence_transformer_frozen.json \
+  --data-root /path/to/clinc150 \
+  --models-dir /path/to/models \
+  --output experiments/runs/clinc150_frozen/validation.json \
+  --evaluate-pretrained --split validation
 ```
 
-## Структура данных старых датасетов
+## Experiment matrices
 
-`KorSynthetic` ожидает отдельную папку для каждого класса с синтетическими
-изображениями в JSON-формате, используемом проектом. `Omniglot` использует
-иерархию папок «алфавит/символ». `Common` ожидает два уровня папок: в папке
-класса должны лежать изображения. Для формирования положительной пары в папке
-класса должно быть не меньше двух изображений.
+Use the batch runner for the predeclared PHD08, Omniglot, CUB-200-2011, and
+CLINC150 matrices. `--dry-run` writes and displays the planned jobs without
+starting training:
 
-## Метрики и воспроизводимость
+```bash
+python scripts/run_experiment_batch.py \
+  --series p1 --phase development \
+  --data-root /path/to/PHD08_dataset \
+  --models-dir /path/to/models \
+  --seeds 1,2,3,4,5 --dry-run
+```
 
-При оценке триплетов пара «якорь–положительный пример» считается положительной,
-а пары «якорь–отрицательный пример» и «положительный–отрицательный пример» —
-отрицательными. Для EER (равной частоты ошибок) оценка пары — отрицательное
-евклидово расстояние, а положительная метка означает принадлежность к одному
-классу.
+The PHD08 queue also supports `p2` through `p5`; other series are listed in
+[`experiments/RUNBOOK.md`](experiments/RUNBOOK.md). The worker records the exact
+config, command, checkpoint, logs, seed, and output directory for each job.
 
-Параметр `common.seed` задаёт начальные состояния генераторов случайных чисел
-Python, NumPy и PyTorch. Контрольные точки сохраняют состояние модели,
-оптимизатора, планировщика скорости обучения и эпохи. Для продолжения обучения
-укажи сохранённый `model.pt` в `common.file_to_start`.
+## Canonical experiment config
+
+Every config declares its dataset and split manifest, task, model, objective,
+sampler, training, validation/test protocol, evaluation geometry, and hardware.
+The supported metric objectives include `catml`, `triplet`, `contrastive`,
+`supcon`, `multiple_negatives`, `multi_similarity`, and `proxy_anchor`.
+
+Sampler settings are explicit: `positive` is `random` or `apm`; `negative` is
+`random`, `semi_hard`, `batch_hard`, or `auto_clusters`. Auto-clustering builds a
+class graph from training embeddings. All methods draw class-balanced P×K
+batches, so they use the same batch protocol when compared in a matrix.
+
+Do not change a split manifest, dataset inventory, objective, sampler, model, or
+evaluation distance within a comparison series. Create a distinct config and
+record the change as a separate experiment. The runner checks manifest hashes
+and class disjointness before training.
+
+## Dataset preparation and protocols
+
+Manifests and their generators are in `experiments/manifests/` and
+`scripts/prepare_manifests.py`. Parquet conversion/restoration tools are in
+`scripts/`. Dataset layouts, exact split rules, and the research protocols are
+documented in the [experiment guide](experiments/README.md), the
+[runbook](experiments/RUNBOOK.md), and the four
+[research plans](EXPERIMENT_PLAN_PHD08.md),
+[Omniglot](EXPERIMENT_PLAN_OMNIGLOT.md), [CUB](EXPERIMENT_PLAN_CUB.md), and
+[CLINC150](EXPERIMENT_PLAN_CLINC150.md).
+
+## Checks
+
+Run the batch-planning regression checks with:
+
+```bash
+python -m unittest tests.test_batch_integrity
+```

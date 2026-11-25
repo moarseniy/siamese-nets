@@ -114,7 +114,7 @@ class ClassSource:
         try:
             import pyarrow.parquet as pq
         except ImportError as exc:
-            raise RuntimeError("Reading Parquet datasets requires pyarrow; install requirements-experiments.txt") from exc
+                raise RuntimeError("Reading Parquet datasets requires pyarrow; install requirements.txt") from exc
         records: list[SampleRef] = []
         for parquet_path in self.parquet_files:
             parquet_file = pq.ParquetFile(parquet_path)
@@ -730,7 +730,7 @@ class SampleDataset(Dataset):
             try:
                 import pyarrow.parquet as pq
             except ImportError as exc:
-                raise RuntimeError("Reading Parquet datasets requires pyarrow; install requirements-experiments.txt") from exc
+                raise RuntimeError("Reading Parquet datasets requires pyarrow; install requirements.txt") from exc
             table = pq.ParquetFile(ref.parquet_path).read_row_group(
                 ref.parquet_row_group, columns=columns
             )

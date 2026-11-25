@@ -19,18 +19,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
+from PIL import Image
 
-from dataset import DatasetCatalog, ExperimentSampleDataset as SampleDataset, ExperimentSampleRef as SampleRef
-from dataset import (
-    collate_experiment_samples as collate_samples,
-    load_experiment_catalog as load_catalog,
-    load_experiment_kor_alphabet as load_kor_alphabet,
+from experiment_data import (
+    DatasetCatalog,
+    SampleDataset,
+    SampleRef,
+    collate_samples,
+    load_catalog,
+    load_kor_alphabet,
 )
-from loss import CATMLLoss, ProxyAnchorLoss, multi_negative_ranking, multi_similarity, pair_contrastive, supervised_contrastive, triplet_hinge
-from metrics import embedding_classification_metrics, open_set_metrics, retrieval_metrics
-from mining_methods import APMState, ClassGraph, PKBatchSampler, make_triplets
-from model import build_experiment_encoder as build_encoder
-from experiment_models import configure_model_cache
+from experiment_losses import (
+    CATMLLoss,
+    ProxyAnchorLoss,
+    multiple_negatives_ranking,
+    multi_similarity,
+    pair_contrastive,
+    supervised_contrastive,
+    triplet_hinge,
+)
+from experiment_metrics import embedding_classification_metrics, open_set_metrics, retrieval_metrics
+from experiment_sampling import APMState, ClassGraph, PKBatchSampler, make_triplets
+from experiment_models import build_encoder, configure_model_cache
 
 
 def set_seed(seed: int) -> None:
@@ -151,7 +161,7 @@ def _batch_loss(loss_name, embeddings, labels, triples, loss_config, objective, 
     if loss_name == "supcon":
         return supervised_contrastive(embeddings, labels, temperature=loss_config.get("temperature", 0.07)), {}
     if loss_name == "multiple_negatives":
-        return multi_negative_ranking(embeddings, labels, temperature=loss_config.get("temperature", 0.05)), {}
+        return multiple_negatives_ranking(embeddings, labels, temperature=loss_config.get("temperature", 0.05)), {}
     if loss_name == "multi_similarity":
         return multi_similarity(embeddings, labels), {}
     if loss_name == "proxy_anchor":
@@ -527,18 +537,25 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
     if evaluation["task"] == "run_folder_oneshot":
         if catalog.modality != "image":
             raise ValueError("Omniglot run-folder one-shot evaluation only supports image encoders")
-        from torchvision import transforms
-        from oneshot import run_oneshot
-
         task_root = Path(evaluation["root"])
-        transform = transforms.Compose([
-            transforms.Resize((int(config["model"].get("image_size", 105)),) * 2),
-            transforms.ToTensor(),
-        ])
         runs = []
         model.eval()
         for run_folder in sorted(path for path in task_root.iterdir() if path.is_dir()):
-            runs.append(float(run_oneshot(model, str(run_folder), transform)))
+            support_paths, support_labels = _load_run_folder_images(run_folder / "training")
+            query_paths, query_labels = _load_run_folder_images(run_folder / "test")
+            if not support_paths or not query_paths:
+                raise ValueError(f"One-shot run has no support or query images: {run_folder}")
+
+            image_mode = "L" if sample_dataset.image_channels == 1 else "RGB"
+            support_images = _transform_run_folder_images(support_paths, sample_dataset, image_mode, device)
+            query_images = _transform_run_folder_images(query_paths, sample_dataset, image_mode, device)
+            with torch.inference_mode():
+                support_embeddings = model(support_images)
+                query_embeddings = model(query_images)
+                nearest = torch.cdist(query_embeddings, support_embeddings).argmin(dim=1).cpu().tolist()
+            predicted_labels = [support_labels[index] for index in nearest]
+            runs.append(sum(prediction == target for prediction, target in zip(predicted_labels, query_labels)) /
+                        len(query_labels))
         if not runs:
             raise ValueError(f"No one-shot run folders found under {task_root}")
         return {"run_folder_oneshot_accuracy": float(np.mean(runs)),
@@ -573,13 +590,59 @@ def _run_evaluation(config, section_name, catalog, model, head, sample_dataset, 
     raise ValueError(f"Unsupported {section_name} task {evaluation['task']!r}")
 
 
+def _load_run_folder_images(directory: Path) -> tuple[list[Path], list[int]]:
+    paths, labels = [], []
+    if not directory.is_dir():
+        raise FileNotFoundError(f"One-shot split directory does not exist: {directory}")
+    for class_id, class_dir in enumerate(sorted(path for path in directory.iterdir() if path.is_dir())):
+        for path in sorted(class_dir.iterdir()):
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}:
+                paths.append(path)
+                labels.append(class_id)
+    return paths, labels
+
+
+def _transform_run_folder_images(paths: list[Path], sample_dataset, image_mode: str, device: torch.device) -> torch.Tensor:
+    images = []
+    for path in paths:
+        with Image.open(path) as image:
+            images.append(sample_dataset.image_transform(image.convert(image_mode)))
+    return torch.stack(images).to(device)
+
+
 def _load_config(path: Path) -> dict:
     config = json.loads(path.read_text(encoding="utf-8"))
     required = ("dataset", "manifest", "protocol", "task", "model", "training", "sampler", "hardware")
     missing = [key for key in required if key not in config]
     if missing:
         raise ValueError(f"Experiment config is missing keys: {missing}")
-    loss_type = config.get("loss", {}).get("type", "catml")
+    allowed = {
+        "dataset", "manifest", "protocol", "catalog_protocol", "train_class_key", "task",
+        "seed", "data_split_seed", "dataset_options", "model", "loss", "sampler", "training",
+        "validation", "test", "evaluation", "hardware", "classification_head", "evaluation_dataset",
+    }
+    unknown = sorted(set(config) - allowed)
+    if unknown:
+        raise ValueError(f"Experiment config has unsupported top-level keys: {unknown}")
+
+    if config["task"] not in ("metric", "classification"):
+        raise ValueError("task must be 'metric' or 'classification'")
+    if config["model"].get("modality") not in ("image", "text"):
+        raise ValueError("model.modality must be 'image' or 'text'")
+    if config["sampler"].get("positive", "random") not in ("random", "apm"):
+        raise ValueError("sampler.positive must be 'random' or 'apm'")
+    if config["sampler"].get("negative", "random") not in (
+        "random", "semi_hard", "batch_hard", "auto_clusters"
+    ):
+        raise ValueError("sampler.negative must be random, semi_hard, batch_hard, or auto_clusters")
+
+    loss_type = config.get("loss", {}).get("type")
+    supported_losses = {
+        "catml", "triplet", "contrastive", "supcon", "multiple_negatives",
+        "multi_similarity", "proxy_anchor", "cross_entropy",
+    }
+    if loss_type not in supported_losses:
+        raise ValueError(f"loss.type must be one of {sorted(supported_losses)}")
     if config["task"] == "classification" and loss_type != "cross_entropy":
         raise ValueError("Classification configs must set loss.type='cross_entropy'")
     if config["task"] == "metric" and loss_type == "cross_entropy" and not config.get("classification_head", False):

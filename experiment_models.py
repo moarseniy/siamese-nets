@@ -132,9 +132,9 @@ class ImageEncoder(nn.Module):
         elif backbone == "kornet2":
             import json
             from pathlib import Path
-            from configuration import configure_model
+            from experiment_configuration import configure_model
 
-            config_path = Path(__file__).resolve().parent / "zoo" / "KorNet2.json"
+            config_path = Path(__file__).resolve().parent / "experiments" / "models" / "kornet2.json"
             arch = json.loads(config_path.read_text(encoding="utf-8"))
             feature_dim = int(arch["layers"]["output"]["params"]["out"])
             self.network = configure_model(arch, [self.input_channels, image_size, image_size])

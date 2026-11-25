@@ -1,4 +1,4 @@
-"""Task metrics kept separate from the legacy pair-verification EER."""
+"""Classification, retrieval, equal-error-rate, and open-set metrics."""
 
 from __future__ import annotations
 
