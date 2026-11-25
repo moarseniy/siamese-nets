@@ -64,7 +64,7 @@ python scripts/run_experiment_batch.py \
 The PHD08 queue also supports `p2` through `p5`; other series are listed in
 [`experiments/RUNBOOK.md`](experiments/RUNBOOK.md). The worker records the exact
 config, command, checkpoint, logs, seed, and output directory for each job.
-For a selector matrix in triplet mode, pass `--batch-mode triplets`,
+For a selector matrix in global batch mode, pass `--batch-mode global`,
 `--batch-size`, `--batch-count`, and `--minibatch-size`; use selectors such as
 `random`, `global_hard`, `semi_hard`, and `auto_clusters`.
 
@@ -77,16 +77,19 @@ The supported metric objectives include `catml`, `triplet`, `contrastive`,
 
 Sampler settings are explicit: `positive` is `random` or `apm`; `negative` is
 `random`, `semi_hard`, `batch_hard`, `global_hard`, or `auto_clusters`.
-`sampler.batch_mode` selects the classic `pk` loader or the new `triplets` loader.
-The classic mode builds P×K candidate pools, chooses positives at random within
-each class, and applies the selected negative sampler inside the batch. Triplet
-mode generates logical batches of triplet indices, then trains them in
+`sampler.batch_mode` selects the classic `pk` loader or `global`. The
+classic mode builds P×K candidate pools, chooses positives at random within
+each class, and applies the selected negative sampler inside the batch.
+`global` generates logical batches of triplet indices directly, then trains them in
 microbatches with gradient accumulation. Set `training.batch_size` (triplets per
 logical batch), `training.batch_count` (optimizer updates per epoch), and
 `training.minibatch_size` (triplets per GPU microbatch; it must divide
 `batch_size`).
 
-In triplet mode, `random` samples negatives globally; `global_hard` and
+`sampler.batch_mode="global"` selects this batch-generation mode;
+`sampler.negative="global_hard"` selects a particular negative-mining rule.
+
+In `global` mode, `random` samples negatives globally; `global_hard` and
 `semi_hard` search the full training set exactly using a frozen embedding bank.
 After the first shared centroid snapshot exists, APM also uses that bank to
 calculate class radii. The bank is built when global hard/semi-hard mining is
@@ -103,7 +106,7 @@ CATML uses microbatch centers.
 
 Global hard mining has cost proportional to anchors × train examples. The
 feature bank is stored on the host; distance search streams it to the GPU in
-chunks. Triplet mode also keeps the sample-reference index on the host, while
+chunks. The `global` mode also keeps the sample-reference index on the host, while
 image/text payloads are loaded only for each GPU microbatch. CATML computes the
 radius of each microbatch sample against the shared snapshot centers; the
 centers are detached from that microbatch's backward pass.

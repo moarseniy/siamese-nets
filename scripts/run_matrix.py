@@ -51,10 +51,10 @@ def main() -> None:
     parser.add_argument("--selectors", default="random,apm_auto")
     parser.add_argument("--examples-per-class", default="all", help="Comma-separated train budgets: all,5,10")
     parser.add_argument("--triplet-margin", type=float, default=0.2)
-    parser.add_argument("--batch-mode", choices=("pk", "triplets"), default="pk")
-    parser.add_argument("--batch-size", type=int, help="Triplets per logical batch in triplet batch mode")
-    parser.add_argument("--batch-count", type=int, help="Logical batches (optimizer updates) per epoch in triplet batch mode")
-    parser.add_argument("--minibatch-size", type=int, help="Triplets per GPU microbatch in triplet batch mode")
+    parser.add_argument("--batch-mode", choices=("pk", "global"), default="pk")
+    parser.add_argument("--batch-size", type=int, help="Triplets per logical batch in global mode")
+    parser.add_argument("--batch-count", type=int, help="Logical batches (optimizer updates) per epoch in global mode")
+    parser.add_argument("--minibatch-size", type=int, help="Triplets per GPU microbatch in global mode")
     parser.add_argument("--contrastive-margin", type=float, default=1.0)
     parser.add_argument("--proxy-margin", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, help="Override epoch count for a short pilot")
@@ -114,7 +114,7 @@ def main() -> None:
     unknown_losses = sorted(set(losses) - LOSSES)
     if unknown_losses:
         raise ValueError(f"Unknown losses {unknown_losses}; choose from {sorted(LOSSES)}")
-    if args.batch_mode == "triplets":
+    if args.batch_mode == "global":
         missing_batch_sizes = [
             name for name, value in (
                 ("--batch-size", args.batch_size),
@@ -123,21 +123,21 @@ def main() -> None:
             ) if value is None
         ]
         if missing_batch_sizes:
-            parser.error(f"--batch-mode triplets requires {' '.join(missing_batch_sizes)}")
+            parser.error(f"--batch-mode global requires {' '.join(missing_batch_sizes)}")
         if min(args.batch_size, args.batch_count, args.minibatch_size) <= 0:
             parser.error("Triplet batch sizes and counts must be positive")
         if args.batch_size % args.minibatch_size != 0:
             parser.error("--batch-size must be divisible by --minibatch-size")
         if any(loss not in ("catml", "triplet", "contrastive") for loss in losses):
-            parser.error("--batch-mode triplets supports only catml, triplet, and contrastive objectives")
+            parser.error("--batch-mode global supports only catml, triplet, and contrastive objectives")
         if args.phd08_baseline:
-            parser.error("--batch-mode triplets cannot be used with the fixed PHD08 baseline matrix")
+            parser.error("--batch-mode global cannot be used with the fixed PHD08 baseline matrix")
         if args.steps_per_epoch is not None:
-            parser.error("Use --batch-count, not --steps-per-epoch, with --batch-mode triplets")
+            parser.error("Use --batch-count, not --steps-per-epoch, with --batch-mode global")
         if any(SELECTORS[name][1] == "batch_hard" for name in selectors):
-            parser.error("batch_hard is P×K-only; use global_hard or semi_hard in triplet mode")
+            parser.error("batch_hard is P×K-only; use global_hard or semi_hard in global mode")
     elif any(SELECTORS[name][1] == "global_hard" for name in selectors):
-        parser.error("global_hard requires --batch-mode triplets")
+        parser.error("global_hard requires --batch-mode global")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     config_dir = args.output_dir / "configs"
@@ -164,7 +164,7 @@ def main() -> None:
                 config["seed"] = seed
                 config["loss"]["type"] = loss_name
                 config["sampler"]["batch_mode"] = args.batch_mode
-                if args.batch_mode == "triplets":
+                if args.batch_mode == "global":
                     config["training"]["batch_size"] = args.batch_size
                     config["training"]["batch_count"] = args.batch_count
                     config["training"]["minibatch_size"] = args.minibatch_size
@@ -203,7 +203,7 @@ def main() -> None:
                         config[section]["k_shot"] = args.k_shot
                 if config["sampler"]["negative"] == "auto_clusters":
                     config["sampler"].setdefault("cluster_fraction", 0.002)
-                    if args.batch_mode == "triplets":
+                    if args.batch_mode == "global":
                         config["sampler"].setdefault("make_cluster_on_epoch", 1)
                     else:
                         config["sampler"].setdefault("cluster_update_steps", 0)
@@ -233,8 +233,8 @@ def main() -> None:
                         config["test"]["checkpoint"] = "last"
                 selector_name = selector or "standard"
                 mode_suffix = ""
-                if args.batch_mode == "triplets":
-                    mode_suffix = f"_triplets_b{args.batch_size}_n{args.batch_count}_m{args.minibatch_size}"
+                if args.batch_mode == "global":
+                    mode_suffix = f"_global_b{args.batch_size}_n{args.batch_count}_m{args.minibatch_size}"
                 name = f"{config['dataset']}_{args.stage}_{loss_name}_{selector_name}{mode_suffix}_{budget}_seed{seed}.json"
                 config_path = config_dir / name
                 config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

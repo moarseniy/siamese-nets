@@ -747,13 +747,13 @@ def _load_config(path: Path) -> dict:
     if config["model"].get("modality") not in ("image", "text"):
         raise ValueError("model.modality must be 'image' or 'text'")
     batch_mode = config["sampler"].get("batch_mode", "pk")
-    if batch_mode not in ("pk", "triplets"):
-        raise ValueError("sampler.batch_mode must be 'pk' or 'triplets'")
+    if batch_mode not in ("pk", "global"):
+        raise ValueError("sampler.batch_mode must be 'pk' or 'global'")
     if config["sampler"].get("positive", "random") not in ("random", "apm"):
         raise ValueError("sampler.positive must be 'random' or 'apm'")
     negative_mode = config["sampler"].get("negative", "random")
     allowed_negative = {"random", "semi_hard", "batch_hard", "auto_clusters"}
-    if batch_mode == "triplets":
+    if batch_mode == "global":
         allowed_negative.add("global_hard")
     if negative_mode not in allowed_negative:
         raise ValueError(f"sampler.negative must be one of {sorted(allowed_negative)} for batch_mode={batch_mode!r}")
@@ -769,17 +769,17 @@ def _load_config(path: Path) -> dict:
         raise ValueError("Classification configs must set loss.type='cross_entropy'")
     if config["task"] == "metric" and loss_type == "cross_entropy" and not config.get("classification_head", False):
         raise ValueError("A metric-task cross-entropy baseline must set classification_head=true")
-    if batch_mode == "triplets":
+    if batch_mode == "global":
         if config["task"] != "metric" or loss_type not in ("catml", "triplet", "contrastive"):
-            raise ValueError("sampler.batch_mode='triplets' requires a metric task with catml, triplet, or contrastive loss")
+            raise ValueError("sampler.batch_mode='global' requires a metric task with catml, triplet, or contrastive loss")
         for key in ("batch_size", "batch_count", "minibatch_size"):
             value = config["training"].get(key)
             if not isinstance(value, int) or value <= 0:
-                raise ValueError(f"training.{key} must be a positive integer when sampler.batch_mode='triplets'")
+                raise ValueError(f"training.{key} must be a positive integer when sampler.batch_mode='global'")
         if config["training"]["batch_size"] % config["training"]["minibatch_size"] != 0:
             raise ValueError("training.batch_size must be divisible by training.minibatch_size")
         if negative_mode == "batch_hard":
-            raise ValueError("batch_hard requires P×K candidates; use global_hard or semi_hard in triplet mode")
+            raise ValueError("batch_hard requires P×K candidates; use global_hard or semi_hard in global mode")
         if not 0.0 <= float(config["sampler"].get("directed_probability", 0.2)) <= 1.0:
             raise ValueError("sampler.directed_probability must be in [0, 1]")
         if int(config["sampler"].get("make_cluster_on_epoch", 1)) <= 0:
@@ -1036,7 +1036,7 @@ def run(
     if config["task"] == "classification" or config.get("classification_head", False):
         classifier = nn.Linear(model.output_dim, len(train_classes)).to(device)
     loss_name, objective = _make_objective(config, len(train_classes), model.output_dim, device)
-    uses_shared_centroids = batch_mode == "triplets" and (
+    uses_shared_centroids = batch_mode == "global" and (
         loss_name == "catml" or apm is not None or sampler_config.get("negative") == "auto_clusters"
     )
     optimizer_parameters = list(model.parameters())
@@ -1087,8 +1087,8 @@ def run(
         "compute_capability": [props.major, props.minor],
         "python_seed": config["seed"],
         "batch_mode": batch_mode,
-        "triplet_centroid_source": "shared_triplet_snapshot" if batch_mode == "triplets" else "current_batch",
-        "triplet_catml_center_gradient": "shared_snapshot_detached_after_warmup" if batch_mode == "triplets" and loss_name == "catml" else None,
+        "triplet_centroid_source": "shared_triplet_snapshot" if batch_mode == "global" else "current_batch",
+        "triplet_catml_center_gradient": "shared_snapshot_detached_after_warmup" if batch_mode == "global" and loss_name == "catml" else None,
     }
     (output_dir / "resolved_config.json").write_text(json.dumps(resolved_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1120,11 +1120,11 @@ def run(
         if sampler is not None:
             sampler.epoch = int(state.get("sampler_epoch", state["epoch"] + 1))
         cluster_accumulator = state.get("cluster_accumulator")
-        if batch_mode == "triplets" and cluster_accumulator:
+        if batch_mode == "global" and cluster_accumulator:
             cluster_center_sum.copy_(cluster_accumulator["sum"].to(device))
             cluster_center_count.copy_(cluster_accumulator["count"].to(device))
         shared_centroid_state = state.get("shared_centroids")
-        if batch_mode == "triplets" and shared_centroid_state:
+        if batch_mode == "global" and shared_centroid_state:
             shared_centers.copy_(shared_centroid_state["centers"].to(device))
             shared_center_observed.copy_(shared_centroid_state["observed"].to(device))
         start_epoch = int(state["epoch"]) + 1
@@ -1152,7 +1152,7 @@ def run(
             worker_generator.manual_seed(config["seed"] + epoch)
         bank_embeddings = None
         bank_labels = None
-        if batch_mode == "triplets" and (
+        if batch_mode == "global" and (
             sampler_config.get("negative") in ("global_hard", "semi_hard")
             or (apm is not None and shared_center_observed.any())
         ):
@@ -1169,15 +1169,15 @@ def run(
                 amp_enabled,
                 amp_dtype,
             )
-        shared_centers_train = shared_centers.index_select(0, train_catalog_ids) if batch_mode == "triplets" else None
-        shared_center_observed_train = shared_center_observed.index_select(0, train_catalog_ids) if batch_mode == "triplets" else None
-        if batch_mode == "triplets" and apm is not None:
+        shared_centers_train = shared_centers.index_select(0, train_catalog_ids) if batch_mode == "global" else None
+        shared_center_observed_train = shared_center_observed.index_select(0, train_catalog_ids) if batch_mode == "global" else None
+        if batch_mode == "global" and apm is not None:
             if bank_embeddings is not None and shared_center_observed_train.any():
                 apm.update_shared_centers(bank_embeddings, bank_labels, shared_centers_train, shared_center_observed_train)
             anchor_probabilities = apm.probabilities()
         else:
             anchor_probabilities = None
-        shared_center_ids = torch.where(shared_center_observed)[0].detach().cpu().tolist() if batch_mode == "triplets" else []
+        shared_center_ids = torch.where(shared_center_observed)[0].detach().cpu().tolist() if batch_mode == "global" else []
         shared_fixed_centers = {
             int(class_id): shared_centers[int(class_id)] for class_id in shared_center_ids
         }
@@ -1410,11 +1410,11 @@ def run(
             "cluster_accumulator": {
                 "sum": cluster_center_sum.detach().cpu(),
                 "count": cluster_center_count.detach().cpu(),
-            } if batch_mode == "triplets" else None,
+            } if batch_mode == "global" else None,
             "shared_centroids": {
                 "centers": shared_centers.detach().cpu(),
                 "observed": shared_center_observed.detach().cpu(),
-            } if batch_mode == "triplets" else None,
+            } if batch_mode == "global" else None,
             "sampler_epoch": epoch + 1,
             "best_score": max(best_score, score),
             "rng": {
