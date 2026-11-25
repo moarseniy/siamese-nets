@@ -12,6 +12,7 @@ import json
 import math
 import random
 import time
+from bisect import bisect_right
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +40,7 @@ from experiment_losses import (
     triplet_hinge,
 )
 from experiment_metrics import embedding_classification_metrics, open_set_metrics, retrieval_metrics
-from experiment_sampling import APMState, ClassGraph, PKBatchSampler, make_triplets
+from experiment_sampling import APMState, ClassGraph, PKBatchSampler, TripletIndexBatchSampler, generate_triplet_batch, make_triplets
 from experiment_models import build_encoder, configure_model_cache
 
 
@@ -66,6 +67,59 @@ class ReferenceDataset(Dataset):
 
     def __getitem__(self, index):
         return self.base[self.refs[index]]
+
+
+class TripletReferenceDataset(Dataset):
+    """Resolve generated global sample-row triples lazily for GPU microbatches."""
+
+    def __init__(self, base: SampleDataset, refs_by_class, offsets: list[int]):
+        self.base = base
+        self.refs_by_class = refs_by_class
+        self.offsets = offsets
+
+    def __len__(self):
+        return self.offsets[-1]
+
+    def __getitem__(self, triplet_rows):
+        return tuple(self.base[self._reference(int(row))] for row in triplet_rows)
+
+    def _reference(self, row: int) -> SampleRef:
+        class_index = bisect_right(self.offsets, row) - 1
+        return self.refs_by_class[class_index][row - self.offsets[class_index]]
+
+
+class ClasswiseReferenceDataset(Dataset):
+    """Flatten classwise references by index without copying every reference pointer."""
+
+    def __init__(self, base: SampleDataset, refs_by_class, offsets: list[int]):
+        self.base = base
+        self.refs_by_class = refs_by_class
+        self.offsets = offsets
+
+    def __len__(self):
+        return self.offsets[-1]
+
+    def __getitem__(self, index):
+        class_index = bisect_right(self.offsets, index) - 1
+        reference = self.refs_by_class[class_index][index - self.offsets[class_index]]
+        return self.base[reference]
+
+
+def collate_triplets(batch: list[tuple[dict, dict, dict]]) -> dict:
+    """Flatten a microbatch of triplets into the usual sample batch format."""
+    return collate_samples([sample for triplet in batch for sample in triplet])
+
+
+def _training_references(catalog, train_classes, split, seed, protocol, examples_per_class):
+    refs_by_class = []
+    for label in train_classes:
+        source = catalog.classes[label]
+        if examples_per_class in (None, "all"):
+            refs = source.records_for(split, seed, protocol)
+        else:
+            refs = source.budget_records(split, seed, protocol, int(examples_per_class))
+        refs_by_class.append(tuple(refs))
+    return refs_by_class
 
 
 class ReferenceStreamDataset(IterableDataset):
@@ -110,6 +164,69 @@ def _forward(model, batch: dict, modality: str, tokenizer, device: torch.device,
     if device.type == "cuda" and images.ndim == 4:
         images = images.contiguous(memory_format=torch.channels_last)
     return model(images)
+
+
+@torch.no_grad()
+def _precompute_training_embedding_bank(
+    model,
+    sample_dataset: SampleDataset,
+    refs_by_class,
+    offsets: list[int],
+    class_counts: list[int],
+    config: dict,
+    tokenizer,
+    device: torch.device,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Encode the full train split once for global-hard/semi-hard tuple mining."""
+    sample_count = offsets[-1]
+    if sample_count <= 0:
+        raise ValueError("Cannot build a global mining bank from an empty training split")
+    mining_batch_size = int(config.get("training", {}).get(
+        "mining_batch_size", config.get("evaluation", {}).get("batch_size", 512)
+    ))
+    if mining_batch_size <= 0:
+        raise ValueError("training.mining_batch_size must be positive")
+    workers = int(config["hardware"].get("num_workers", 8))
+    generator = torch.Generator(device="cpu").manual_seed(int(config["seed"]) + 99173)
+    loader = DataLoader(
+        ClasswiseReferenceDataset(sample_dataset, refs_by_class, offsets),
+        batch_size=mining_batch_size,
+        shuffle=False,
+        num_workers=workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=False,
+        prefetch_factor=int(config["hardware"].get("prefetch_factor", 2)) if workers > 0 else None,
+        collate_fn=collate_samples,
+        worker_init_fn=worker_init_fn,
+        generator=generator,
+    )
+
+    features = torch.empty((sample_count, model.output_dim), dtype=torch.float32, device="cpu")
+    start = 0
+    was_training = model.training
+    model.eval()
+    for batch in loader:
+        with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
+            embeddings = _forward(
+                model, batch, sample_dataset.catalog.modality, tokenizer, device,
+                int(config["model"].get("max_length", 128)),
+            )
+        values = embeddings.detach().float().cpu()
+        stop = start + values.shape[0]
+        features[start:stop].copy_(values)
+        start = stop
+    if was_training:
+        model.train()
+    if start != sample_count:
+        raise RuntimeError(f"Embedding-bank pass produced {start} rows for {sample_count} training samples")
+    print(f"Global mining bank ready: {sample_count} samples, {features.numel() * features.element_size() / 2**30:.2f} GiB on host")
+    labels = torch.repeat_interleave(
+        torch.arange(len(class_counts), dtype=torch.long),
+        torch.as_tensor(class_counts, dtype=torch.long),
+    )
+    return features, labels
 
 
 def _class_ids(names: list[str], mapping: dict[str, int], device: torch.device) -> torch.Tensor:
@@ -629,12 +746,17 @@ def _load_config(path: Path) -> dict:
         raise ValueError("task must be 'metric' or 'classification'")
     if config["model"].get("modality") not in ("image", "text"):
         raise ValueError("model.modality must be 'image' or 'text'")
+    batch_mode = config["sampler"].get("batch_mode", "pk")
+    if batch_mode not in ("pk", "triplets"):
+        raise ValueError("sampler.batch_mode must be 'pk' or 'triplets'")
     if config["sampler"].get("positive", "random") not in ("random", "apm"):
         raise ValueError("sampler.positive must be 'random' or 'apm'")
-    if config["sampler"].get("negative", "random") not in (
-        "random", "semi_hard", "batch_hard", "auto_clusters"
-    ):
-        raise ValueError("sampler.negative must be random, semi_hard, batch_hard, or auto_clusters")
+    negative_mode = config["sampler"].get("negative", "random")
+    allowed_negative = {"random", "semi_hard", "batch_hard", "auto_clusters"}
+    if batch_mode == "triplets":
+        allowed_negative.add("global_hard")
+    if negative_mode not in allowed_negative:
+        raise ValueError(f"sampler.negative must be one of {sorted(allowed_negative)} for batch_mode={batch_mode!r}")
 
     loss_type = config.get("loss", {}).get("type")
     supported_losses = {
@@ -647,6 +769,21 @@ def _load_config(path: Path) -> dict:
         raise ValueError("Classification configs must set loss.type='cross_entropy'")
     if config["task"] == "metric" and loss_type == "cross_entropy" and not config.get("classification_head", False):
         raise ValueError("A metric-task cross-entropy baseline must set classification_head=true")
+    if batch_mode == "triplets":
+        if config["task"] != "metric" or loss_type not in ("catml", "triplet", "contrastive"):
+            raise ValueError("sampler.batch_mode='triplets' requires a metric task with catml, triplet, or contrastive loss")
+        for key in ("batch_size", "batch_count", "minibatch_size"):
+            value = config["training"].get(key)
+            if not isinstance(value, int) or value <= 0:
+                raise ValueError(f"training.{key} must be a positive integer when sampler.batch_mode='triplets'")
+        if config["training"]["batch_size"] % config["training"]["minibatch_size"] != 0:
+            raise ValueError("training.batch_size must be divisible by training.minibatch_size")
+        if negative_mode == "batch_hard":
+            raise ValueError("batch_hard requires P×K candidates; use global_hard or semi_hard in triplet mode")
+        if not 0.0 <= float(config["sampler"].get("directed_probability", 0.2)) <= 1.0:
+            raise ValueError("sampler.directed_probability must be in [0, 1]")
+        if int(config["sampler"].get("make_cluster_on_epoch", 1)) <= 0:
+            raise ValueError("sampler.make_cluster_on_epoch must be positive")
     return config
 
 
@@ -731,6 +868,7 @@ def run(
     train_label_ids = {name: index for index, name in enumerate(train_classes)}
     train_catalog_ids = torch.tensor([all_label_ids[label] for label in train_classes], device=device)
     sampler_config = config["sampler"]
+    batch_mode = sampler_config.get("batch_mode", "pk")
     apm = None
     if sampler_config.get("positive", "random") == "apm":
         apm = APMState(
@@ -740,19 +878,52 @@ def run(
             ema=sampler_config.get("apm_ema", 0.9),
             unobserved_floor=sampler_config.get("apm_unobserved_floor", 0.01),
         )
-    sampler = PKBatchSampler(
-        catalog,
-        train_classes,
-        split=config["training"].get("train_split", "train"),
-        protocol=config.get("catalog_protocol", config["protocol"]),
-        classes_per_batch=int(sampler_config.get("classes_per_batch", 64)),
-        samples_per_class=int(sampler_config.get("samples_per_class", 4)),
-        steps_per_epoch=int(config["training"].get("steps_per_epoch", 100)),
-        seed=config["seed"],
-        data_split_seed=config["data_split_seed"],
-        apm=apm,
-        examples_per_class=config["training"].get("examples_per_class"),
-    )
+    sampler = None
+    triplet_refs_by_class = None
+    triplet_offsets = None
+    triplet_family_indices = None
+    triplet_anchor_classes = None
+    triplet_negative_classes = None
+    if batch_mode == "pk":
+        sampler = PKBatchSampler(
+            catalog,
+            train_classes,
+            split=config["training"].get("train_split", "train"),
+            protocol=config.get("catalog_protocol", config["protocol"]),
+            classes_per_batch=int(sampler_config.get("classes_per_batch", 64)),
+            samples_per_class=int(sampler_config.get("samples_per_class", 4)),
+            steps_per_epoch=int(config["training"].get("steps_per_epoch", 100)),
+            seed=config["seed"],
+            data_split_seed=config["data_split_seed"],
+            apm=apm,
+            examples_per_class=config["training"].get("examples_per_class"),
+        )
+    else:
+        training_split = config["training"].get("train_split", "train")
+        catalog_protocol = config.get("catalog_protocol", config["protocol"])
+        triplet_refs_by_class = _training_references(
+            catalog,
+            train_classes,
+            training_split,
+            int(config["data_split_seed"]),
+            catalog_protocol,
+            config["training"].get("examples_per_class"),
+        )
+        if sum(map(len, triplet_refs_by_class)) == 0:
+            raise ValueError("Triplet batch mode needs training examples")
+        triplet_offsets = [0]
+        triplet_family_indices = []
+        for class_refs in triplet_refs_by_class:
+            triplet_offsets.append(triplet_offsets[-1] + len(class_refs))
+            family_rows: dict[str, list[int]] = {}
+            for sample_index, reference in enumerate(class_refs):
+                if reference.family_id is not None:
+                    family_rows.setdefault(str(reference.family_id), []).append(sample_index)
+            triplet_family_indices.append(family_rows)
+        triplet_anchor_classes = [index for index, refs in enumerate(triplet_refs_by_class) if len(refs) >= 2]
+        triplet_negative_classes = [index for index, refs in enumerate(triplet_refs_by_class) if refs]
+        if not triplet_anchor_classes or len(triplet_negative_classes) < 2:
+            raise ValueError("Triplet batch mode needs a class with at least two samples and two non-empty classes")
     sample_dataset = SampleDataset(
         catalog,
         all_label_ids,
@@ -844,17 +1015,19 @@ def run(
             raise ValueError(f"Classification test includes classes absent from the training head: {untrained_test_classes[:5]}")
     workers = int(config["hardware"].get("num_workers", 8))
     worker_generator = torch.Generator(device="cpu")
-    loader = DataLoader(
-        sample_dataset,
-        batch_sampler=sampler,
-        num_workers=workers,
-        pin_memory=True,
-        persistent_workers=bool(config["hardware"].get("persistent_workers", False)) and workers > 0,
-        prefetch_factor=int(config["hardware"].get("prefetch_factor", 4)) if workers > 0 else None,
-        collate_fn=collate_samples,
-        worker_init_fn=worker_init_fn,
-        generator=worker_generator,
-    )
+    loader = None
+    if batch_mode == "pk":
+        loader = DataLoader(
+            sample_dataset,
+            batch_sampler=sampler,
+            num_workers=workers,
+            pin_memory=True,
+            persistent_workers=bool(config["hardware"].get("persistent_workers", False)) and workers > 0,
+            prefetch_factor=int(config["hardware"].get("prefetch_factor", 4)) if workers > 0 else None,
+            collate_fn=collate_samples,
+            worker_init_fn=worker_init_fn,
+            generator=worker_generator,
+        )
 
     model = build_encoder(config["model"]).to(device)
     if catalog.modality == "image" and config["hardware"].get("channels_last", True):
@@ -882,6 +1055,8 @@ def run(
         optimizer = torch.optim.AdamW(optimizer_parameters, lr=float(train_cfg.get("learning_rate", 1e-4)), weight_decay=float(train_cfg.get("weight_decay", 0.01)))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(train_cfg.get("epochs", 10)))
     class_graph = ClassGraph(len(catalog.labels), max_cluster_size=int(sampler_config.get("cluster_max_size", 200)))
+    cluster_center_sum = torch.zeros((len(catalog.labels), model.output_dim), device=device)
+    cluster_center_count = torch.zeros(len(catalog.labels), device=device)
     tokenizer = None
     if catalog.modality == "text":
         from transformers import AutoTokenizer
@@ -934,7 +1109,12 @@ def run(
             apm.load_state_dict(state["apm"])
         if state.get("class_graph"):
             class_graph.load_state_dict(state["class_graph"])
-        sampler.epoch = int(state.get("sampler_epoch", state["epoch"] + 1))
+        if sampler is not None:
+            sampler.epoch = int(state.get("sampler_epoch", state["epoch"] + 1))
+        cluster_accumulator = state.get("cluster_accumulator")
+        if batch_mode == "triplets" and cluster_accumulator:
+            cluster_center_sum.copy_(cluster_accumulator["sum"].to(device))
+            cluster_center_count.copy_(cluster_accumulator["count"].to(device))
         start_epoch = int(state["epoch"]) + 1
     else:
         start_epoch = 0
@@ -952,11 +1132,32 @@ def run(
         scaler.load_state_dict(state["scaler"])
 
     for epoch in range(start_epoch, int(train_cfg.get("epochs", 10))):
-        sampler.set_epoch(epoch)
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         # Non-persistent workers are re-seeded deterministically per epoch, so
         # stochastic transforms replay after a checkpoint resume.
         if not bool(config["hardware"].get("persistent_workers", False)):
             worker_generator.manual_seed(config["seed"] + epoch)
+        bank_embeddings = None
+        bank_labels = None
+        if batch_mode == "triplets" and sampler_config.get("negative") in ("global_hard", "semi_hard"):
+            print(f"Building global mining embedding bank for epoch {epoch} ({triplet_offsets[-1]} samples)")
+            bank_embeddings, bank_labels = _precompute_training_embedding_bank(
+                model,
+                evaluation_dataset,
+                triplet_refs_by_class,
+                triplet_offsets,
+                [len(refs) for refs in triplet_refs_by_class],
+                config,
+                tokenizer,
+                device,
+                amp_enabled,
+                amp_dtype,
+            )
+        anchor_probabilities = apm.probabilities() if batch_mode == "triplets" and apm is not None else None
+        triplet_rng = random.Random(config["seed"] + epoch)
+        triplet_negative_rng = random.Random(config["seed"] + epoch + 104729)
+        triplet_np_rng = np.random.default_rng(config["seed"] + epoch)
         model.train()
         if classifier is not None:
             classifier.train()
@@ -966,62 +1167,182 @@ def run(
         epoch_metrics: dict[str, float] = {}
         center_sum = torch.zeros((len(catalog.labels), model.output_dim), device=device)
         center_count = torch.zeros(len(catalog.labels), device=device)
-        for step, batch in enumerate(loader):
-            labels = batch["label"].to(device, non_blocking=True)
-            optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
-                embeddings = _forward(model, batch, catalog.modality, tokenizer, device, int(config["model"].get("max_length", 128)))
-                if loss_name == "cross_entropy":
-                    local_targets = torch.tensor([train_label_ids[name] for name in batch["class_name"]], device=device)
-                    logits = classifier(embeddings.float())
-                    loss = nn.functional.cross_entropy(logits, local_targets)
-                    batch_metrics = {"classification_loss": loss.detach()}
-                else:
-                    triples = make_triplets(
-                        embeddings,
-                        labels,
-                        mode=sampler_config.get("negative", "random"),
-                        margin=float(config.get("loss", {}).get("margin", 0.2)),
-                        class_graph=class_graph,
-                        directed_probability=float(sampler_config.get("directed_probability", 0.2)),
-                    )
-                    if loss_name == "proxy_anchor":
-                        # Proxy Anchor uses normalized similarities; it has no triplet tuples.
+        if batch_mode == "pk":
+            for step, batch in enumerate(loader):
+                labels = batch["label"].to(device, non_blocking=True)
+                optimizer.zero_grad(set_to_none=True)
+                with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
+                    embeddings = _forward(model, batch, catalog.modality, tokenizer, device, int(config["model"].get("max_length", 128)))
+                    if loss_name == "cross_entropy":
                         local_targets = torch.tensor([train_label_ids[name] for name in batch["class_name"]], device=device)
-                        loss = objective(embeddings, local_targets)
-                        batch_metrics = {"proxy_anchor_loss": loss.detach()}
-                    elif loss_name == "catml":
-                        loss, batch_metrics = objective(embeddings, labels, *triples)
+                        logits = classifier(embeddings.float())
+                        loss = nn.functional.cross_entropy(logits, local_targets)
+                        batch_metrics = {"classification_loss": loss.detach()}
                     else:
-                        loss, batch_metrics = _batch_loss(loss_name, embeddings, labels, triples, config.get("loss", {}), objective, train_label_ids)
+                        triples = make_triplets(
+                            embeddings,
+                            labels,
+                            mode=sampler_config.get("negative", "random"),
+                            margin=float(config.get("loss", {}).get("margin", 0.2)),
+                            class_graph=class_graph,
+                            directed_probability=float(sampler_config.get("directed_probability", 0.2)),
+                        )
+                        if loss_name == "proxy_anchor":
+                            local_targets = torch.tensor([train_label_ids[name] for name in batch["class_name"]], device=device)
+                            loss = objective(embeddings, local_targets)
+                            batch_metrics = {"proxy_anchor_loss": loss.detach()}
+                        elif loss_name == "catml":
+                            loss, batch_metrics = objective(embeddings, labels, *triples)
+                        else:
+                            loss, batch_metrics = _batch_loss(loss_name, embeddings, labels, triples, config.get("loss", {}), objective, train_label_ids)
 
-            if not torch.isfinite(loss):
-                raise FloatingPointError(f"Non-finite loss at epoch={epoch}, step={step}")
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            epoch_loss += float(loss.detach().float().item())
-            for key, value in batch_metrics.items():
-                epoch_metrics[key] = epoch_metrics.get(key, 0.0) + float(value.detach().float().item())
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(f"Non-finite loss at epoch={epoch}, step={step}")
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                epoch_loss += float(loss.detach().float().item())
+                for key, value in batch_metrics.items():
+                    epoch_metrics[key] = epoch_metrics.get(key, 0.0) + float(value.detach().float().item())
 
-            if apm is not None:
-                local_labels = torch.tensor([train_label_ids[name] for name in batch["class_name"]], device=device)
-                apm.update(embeddings.detach(), local_labels)
-            center_sum.index_add_(0, labels, embeddings.detach().float())
-            center_count.index_add_(0, labels, torch.ones_like(labels, dtype=torch.float32))
+                if apm is not None:
+                    local_labels = torch.tensor([train_label_ids[name] for name in batch["class_name"]], device=device)
+                    apm.update(embeddings.detach(), local_labels)
+                center_sum.index_add_(0, labels, embeddings.detach().float())
+                center_count.index_add_(0, labels, torch.ones_like(labels, dtype=torch.float32))
 
-            cluster_every = int(sampler_config.get("cluster_update_steps", 0))
-            if sampler_config.get("negative") == "auto_clusters" and cluster_every > 0 and (step + 1) % cluster_every == 0:
+                cluster_every = int(sampler_config.get("cluster_update_steps", 0))
+                if sampler_config.get("negative") == "auto_clusters" and cluster_every > 0 and (step + 1) % cluster_every == 0:
+                    active = torch.where(center_count > 0)[0]
+                    centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
+                    class_graph.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+
+            if sampler_config.get("negative") == "auto_clusters" and center_count.any():
                 active = torch.where(center_count > 0)[0]
                 centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
                 class_graph.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+            steps = max(1, len(loader))
+        else:
+            logical_batch_size = int(train_cfg["batch_size"])
+            minibatch_size = int(train_cfg["minibatch_size"])
+            batch_count = int(train_cfg["batch_count"])
+            global_class_ids = [all_label_ids[label] for label in train_classes]
 
-        if sampler_config.get("negative") == "auto_clusters" and center_count.any():
-            active = torch.where(center_count > 0)[0]
-            centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
-            class_graph.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+            def generate_current_logical_batch():
+                mining_start = time.time()
+                triplets = generate_triplet_batch(
+                    logical_batch_size,
+                    triplet_refs_by_class,
+                    triplet_offsets,
+                    triplet_family_indices,
+                    triplet_anchor_classes,
+                    triplet_negative_classes,
+                    global_class_ids,
+                    class_graph,
+                    anchor_probabilities,
+                    sampler_config.get("negative", "random"),
+                    float(sampler_config.get("directed_probability", 0.2)),
+                    float(config.get("loss", {}).get("margin", 0.2)),
+                    triplet_rng,
+                    triplet_negative_rng,
+                    triplet_np_rng,
+                    device,
+                    bank_embeddings,
+                    bank_labels,
+                )
+                print(f"Generated logical triplet batch in {time.time() - mining_start:.1f}s")
+                return triplets
+
+            triplet_batch_sampler = TripletIndexBatchSampler(
+                batch_count, logical_batch_size, minibatch_size, generate_current_logical_batch
+            )
+            triplet_dataset = TripletReferenceDataset(sample_dataset, triplet_refs_by_class, triplet_offsets)
+            triplet_loader = DataLoader(
+                triplet_dataset,
+                batch_sampler=triplet_batch_sampler,
+                num_workers=workers,
+                pin_memory=True,
+                persistent_workers=bool(config["hardware"].get("persistent_workers", False)) and workers > 0,
+                prefetch_factor=int(config["hardware"].get("prefetch_factor", 4)) if workers > 0 else None,
+                collate_fn=collate_triplets,
+                worker_init_fn=worker_init_fn,
+                generator=worker_generator,
+            )
+            microbatches_per_logical = logical_batch_size // minibatch_size
+            logical_loss = 0.0
+            logical_metrics: dict[str, float] = {}
+            apm_embedding_parts = []
+            apm_label_parts = []
+            optimizer.zero_grad(set_to_none=True)
+            for microbatch_index, batch in enumerate(triplet_loader):
+                step = microbatch_index // microbatches_per_logical
+                in_logical_index = microbatch_index % microbatches_per_logical
+                if in_logical_index == 0:
+                    logical_loss = 0.0
+                    logical_metrics = {}
+                    apm_embedding_parts = []
+                    apm_label_parts = []
+                    optimizer.zero_grad(set_to_none=True)
+
+                labels = batch["label"].to(device, non_blocking=True)
+                triplet_count = int(labels.numel() // 3)
+                row_ids = torch.arange(triplet_count, device=device)
+                triple_indices = (3 * row_ids, 3 * row_ids + 1, 3 * row_ids + 2)
+                with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
+                    embeddings = _forward(model, batch, catalog.modality, tokenizer, device, int(config["model"].get("max_length", 128)))
+                    if loss_name == "catml":
+                        loss, batch_metrics = objective(embeddings, labels, *triple_indices)
+                    else:
+                        loss, batch_metrics = _batch_loss(
+                            loss_name, embeddings, labels, triple_indices,
+                            config.get("loss", {}), objective, train_label_ids,
+                        )
+
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(f"Non-finite loss at epoch={epoch}, step={step}, microbatch={microbatch_index}")
+                weight = triplet_count / logical_batch_size
+                scaler.scale(loss * weight).backward()
+                logical_loss += float(loss.detach().float().item()) * weight
+                for key, value in batch_metrics.items():
+                    logical_metrics[key] = logical_metrics.get(key, 0.0) + float(value.detach().float().item()) * weight
+
+                if apm is not None:
+                    apm_embedding_parts.append(embeddings.detach())
+                    apm_label_parts.append(_class_ids(batch["class_name"], train_label_ids, device))
+                center_sum.index_add_(0, labels, embeddings.detach().float())
+                center_count.index_add_(0, labels, torch.ones_like(labels, dtype=torch.float32))
+                if sampler_config.get("negative") == "auto_clusters":
+                    cluster_center_sum.index_add_(0, labels, embeddings.detach().float())
+                    cluster_center_count.index_add_(0, labels, torch.ones_like(labels, dtype=torch.float32))
+
+                if in_logical_index + 1 == microbatches_per_logical:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    epoch_loss += logical_loss
+                    for key, value in logical_metrics.items():
+                        epoch_metrics[key] = epoch_metrics.get(key, 0.0) + value
+                    if apm is not None:
+                        apm.update(torch.cat(apm_embedding_parts, dim=0), torch.cat(apm_label_parts, dim=0))
+            steps = max(1, batch_count)
+
+            if sampler_config.get("negative") == "auto_clusters":
+                cluster_period = int(sampler_config.get("make_cluster_on_epoch", 1))
+                if (epoch + 1) % cluster_period == 0 and cluster_center_count.any():
+                    active = torch.where(cluster_center_count > 0)[0]
+                    centers = cluster_center_sum / cluster_center_count.clamp_min(1).unsqueeze(1)
+                    class_graph.update(
+                        centers,
+                        active,
+                        fraction=float(sampler_config.get("cluster_fraction", 0.002)),
+                        max_edges=int(sampler_config.get("cluster_max_edges", 10000)),
+                    )
+                    cluster_center_sum.zero_()
+                    cluster_center_count.zero_()
+            del triplet_loader, triplet_batch_sampler
+            generate_current_logical_batch = None
+            bank_embeddings = None
+            bank_labels = None
         scheduler.step()
-        steps = max(1, len(loader))
         row = {"epoch": epoch, "train_loss": epoch_loss / steps, "lr": optimizer.param_groups[0]["lr"]}
         row.update({key: value / steps for key, value in epoch_metrics.items()})
         validation_cfg = config.get("validation")
@@ -1060,6 +1381,10 @@ def run(
             "validation": validation,
             "apm": apm.state_dict() if apm is not None else None,
             "class_graph": class_graph.state_dict(),
+            "cluster_accumulator": {
+                "sum": cluster_center_sum.detach().cpu(),
+                "count": cluster_center_count.detach().cpu(),
+            } if batch_mode == "triplets" else None,
             "sampler_epoch": epoch + 1,
             "best_score": max(best_score, score),
             "rng": {

@@ -64,6 +64,9 @@ python scripts/run_experiment_batch.py \
 The PHD08 queue also supports `p2` through `p5`; other series are listed in
 [`experiments/RUNBOOK.md`](experiments/RUNBOOK.md). The worker records the exact
 config, command, checkpoint, logs, seed, and output directory for each job.
+For a selector matrix in triplet mode, pass `--batch-mode triplets`,
+`--batch-size`, `--batch-count`, and `--minibatch-size`; use selectors such as
+`random`, `global_hard`, `semi_hard`, and `auto_clusters`.
 
 ## Canonical experiment config
 
@@ -73,9 +76,30 @@ The supported metric objectives include `catml`, `triplet`, `contrastive`,
 `supcon`, `multiple_negatives`, `multi_similarity`, and `proxy_anchor`.
 
 Sampler settings are explicit: `positive` is `random` or `apm`; `negative` is
-`random`, `semi_hard`, `batch_hard`, or `auto_clusters`. Auto-clustering builds a
-class graph from training embeddings. All methods draw class-balanced P×K
-batches, so they use the same batch protocol when compared in a matrix.
+`random`, `semi_hard`, `batch_hard`, `global_hard`, or `auto_clusters`.
+`sampler.batch_mode` selects the classic `pk` loader or the new `triplets` loader.
+The classic mode builds P×K candidate pools, chooses positives at random within
+each class, and applies the selected negative sampler inside the batch. Triplet
+mode generates logical batches of triplet indices, then trains them in
+microbatches with gradient accumulation. Set `training.batch_size` (triplets per
+logical batch), `training.batch_count` (optimizer updates per epoch), and
+`training.minibatch_size` (triplets per GPU microbatch; it must divide
+`batch_size`).
+
+In triplet mode, `random` samples negatives globally; `global_hard` and
+`semi_hard` first encode the full training split with the current model and
+search that frozen embedding bank exactly, using deterministic inference
+preprocessing. Optional `training.mining_batch_size` controls the GPU batch size
+for this pass and defaults to `evaluation.batch_size`. `auto_clusters` chooses from the
+global class graph without requiring the neighboring class to be in the same
+batch. Its centers accumulate over training batches and are rebuilt every
+`sampler.make_cluster_on_epoch` epochs. Global hard mining has quadratic search
+cost in the number of anchors and training examples. The feature bank is stored
+on the host; distance search streams it to the GPU in chunks. Triplet mode also
+keeps the sample-reference index on the host, while image/text payloads are
+loaded only for each GPU microbatch. For CATML in triplet mode, the class-radius
+term is computed within each GPU microbatch, so its center scope is
+`minibatch_size`.
 
 Do not change a split manifest, dataset inventory, objective, sampler, model, or
 evaluation distance within a comparison series. Create a distinct config and

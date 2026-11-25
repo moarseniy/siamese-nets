@@ -221,6 +221,222 @@ class PKBatchSampler:
             yield batch
 
 
+@torch.no_grad()
+def mine_global_negatives(
+    anchor_embeddings: torch.Tensor,
+    positive_embeddings: torch.Tensor,
+    anchor_labels: torch.Tensor,
+    bank_embeddings: torch.Tensor,
+    bank_labels: torch.Tensor,
+    *,
+    mode: str,
+    margin: float = 0.2,
+    query_chunk_size: int = 256,
+    candidate_chunk_size: int = 131072,
+) -> torch.Tensor:
+    """Mine negatives from a complete, frozen training embedding bank.
+
+    The bank may live on CPU; candidate chunks are copied to the query device,
+    so exact global search does not materialize a query-by-dataset matrix.
+    Returns bank row indices on CPU.
+    """
+    if mode not in ("global_hard", "semi_hard"):
+        raise ValueError(f"Unsupported global negative mode {mode!r}")
+    if anchor_embeddings.ndim != 2 or positive_embeddings.shape != anchor_embeddings.shape:
+        raise ValueError("Anchor and positive embeddings must have matching [N, D] shapes")
+    if anchor_labels.numel() != anchor_embeddings.shape[0]:
+        raise ValueError("Anchor labels must match the number of queries")
+    if bank_embeddings.ndim != 2 or bank_embeddings.shape[1] != anchor_embeddings.shape[1]:
+        raise ValueError("Embedding bank must have shape [M, D] matching the query dimension")
+    if bank_labels.numel() != bank_embeddings.shape[0]:
+        raise ValueError("Embedding-bank labels must match the number of bank rows")
+    if bank_embeddings.shape[0] == 0:
+        raise ValueError("Cannot mine negatives from an empty embedding bank")
+
+    device = anchor_embeddings.device
+    queries = anchor_embeddings.detach().float()
+    positives = positive_embeddings.detach().float()
+    labels = anchor_labels.detach().long().to(device)
+    positive_distances = torch.linalg.vector_norm(queries - positives, dim=1)
+    bank_labels_device = bank_labels.to(device=device, dtype=torch.long)
+    nearest_dist = torch.full((queries.shape[0],), torch.inf, device=device)
+    nearest_row = torch.full((queries.shape[0],), -1, dtype=torch.long, device=device)
+    semi_dist = torch.full((queries.shape[0],), torch.inf, device=device)
+    semi_row = torch.full((queries.shape[0],), -1, dtype=torch.long, device=device)
+
+    # Stream the gallery in the outer loop so each CPU-resident bank chunk is
+    # transferred to the GPU once, even when the logical batch is very large.
+    for candidate_start in range(0, bank_embeddings.shape[0], candidate_chunk_size):
+        candidate_stop = min(bank_embeddings.shape[0], candidate_start + candidate_chunk_size)
+        candidates = bank_embeddings[candidate_start:candidate_stop].to(device=device, dtype=torch.float32)
+        candidate_labels = bank_labels_device[candidate_start:candidate_stop]
+        for query_start in range(0, queries.shape[0], query_chunk_size):
+            query_stop = min(queries.shape[0], query_start + query_chunk_size)
+            query = queries[query_start:query_stop]
+            query_labels = labels[query_start:query_stop]
+            pos_dist = positive_distances[query_start:query_stop]
+            distances = torch.cdist(query, candidates)
+            valid = query_labels[:, None] != candidate_labels[None, :]
+            distances.masked_fill_(~valid, torch.inf)
+
+            chunk_nearest, chunk_nearest_local = distances.min(dim=1)
+            current_nearest = nearest_dist[query_start:query_stop]
+            current_nearest_row = nearest_row[query_start:query_stop]
+            improve = chunk_nearest < current_nearest
+            current_nearest[improve] = chunk_nearest[improve]
+            current_nearest_row[improve] = candidate_start + chunk_nearest_local[improve]
+
+            if mode == "semi_hard":
+                semi_mask = valid & (distances > pos_dist[:, None]) & \
+                    (distances < (pos_dist + float(margin))[:, None])
+                semi_distances = distances.masked_fill(~semi_mask, torch.inf)
+                chunk_semi, chunk_semi_local = semi_distances.min(dim=1)
+                current_semi = semi_dist[query_start:query_stop]
+                current_semi_row = semi_row[query_start:query_stop]
+                improve_semi = chunk_semi < current_semi
+                current_semi[improve_semi] = chunk_semi[improve_semi]
+                current_semi_row[improve_semi] = candidate_start + chunk_semi_local[improve_semi]
+
+    if (nearest_row < 0).any():
+        bad = torch.where(nearest_row < 0)[0].tolist()
+        raise ValueError(f"No different-class negative exists in the embedding bank for query rows {bad[:5]}")
+    if mode == "semi_hard":
+        has_semi = semi_row >= 0
+        nearest_row[has_semi] = semi_row[has_semi]
+
+    return nearest_row.cpu()
+
+
+def _sample_positive_rows(class_index: int, refs_by_class, family_indices, rng: random.Random) -> tuple[int, int]:
+    count = len(refs_by_class[class_index])
+    if count < 2:
+        raise ValueError(f"Training class {class_index} needs at least two samples for a positive pair")
+    families = family_indices[class_index]
+    if len(families) >= 2:
+        family_a, family_p = rng.sample(list(families), 2)
+        return rng.choice(families[family_a]), rng.choice(families[family_p])
+    return tuple(rng.sample(range(count), 2))
+
+
+def generate_triplet_batch(
+    batch_size: int,
+    refs_by_class,
+    offsets: list[int],
+    family_indices,
+    anchor_classes: list[int],
+    negative_classes: list[int],
+    global_class_ids: list[int],
+    class_graph: ClassGraph,
+    anchor_probabilities: np.ndarray | None,
+    negative_mode: str,
+    directed_probability: float,
+    margin: float,
+    rng: random.Random,
+    negative_rng: random.Random,
+    np_rng: np.random.Generator,
+    device: torch.device,
+    bank_embeddings: torch.Tensor | None = None,
+    bank_labels: torch.Tensor | None = None,
+) -> np.ndarray:
+    """Generate a logical batch of global sample-index triples."""
+    if batch_size <= 0:
+        raise ValueError("training.batch_size must be positive")
+    if negative_mode == "batch_hard":
+        raise ValueError("batch_hard is defined for the classic P×K mode; use global_hard in triplet mode")
+
+    anchor_pool = np.asarray(anchor_classes, dtype=np.int64)
+    if anchor_probabilities is None:
+        class_probabilities = np.full(len(anchor_pool), 1.0 / len(anchor_pool), dtype=np.float64)
+    else:
+        class_probabilities = np.asarray(anchor_probabilities, dtype=np.float64)[anchor_pool]
+        total = class_probabilities.sum()
+        class_probabilities = class_probabilities / total if total > 0 else np.full(
+            len(anchor_pool), 1.0 / len(anchor_pool), dtype=np.float64
+        )
+    selected_anchor_classes = np_rng.choice(anchor_pool, size=batch_size, replace=True, p=class_probabilities)
+
+    triplets = np.empty((batch_size, 3), dtype=np.int64)
+    anchor_rows = np.empty(batch_size, dtype=np.int64)
+    positive_rows = np.empty(batch_size, dtype=np.int64)
+    for row, class_index_value in enumerate(selected_anchor_classes):
+        class_index = int(class_index_value)
+        anchor_index, positive_index = _sample_positive_rows(class_index, refs_by_class, family_indices, rng)
+        anchor_row = offsets[class_index] + anchor_index
+        positive_row = offsets[class_index] + positive_index
+        triplets[row, 0] = anchor_row
+        triplets[row, 1] = positive_row
+        anchor_rows[row] = anchor_row
+        positive_rows[row] = positive_row
+
+    if negative_mode in ("global_hard", "semi_hard"):
+        if bank_embeddings is None or bank_labels is None:
+            raise ValueError(f"negative={negative_mode!r} requires the epoch embedding bank")
+        query_rows = torch.as_tensor(anchor_rows, dtype=torch.long)
+        positive_query_rows = torch.as_tensor(positive_rows, dtype=torch.long)
+        labels = bank_labels[query_rows]
+        negative_rows = mine_global_negatives(
+            bank_embeddings[query_rows].to(device),
+            bank_embeddings[positive_query_rows].to(device),
+            labels.to(device),
+            bank_embeddings,
+            bank_labels,
+            mode=negative_mode,
+            margin=margin,
+        ).numpy()
+        triplets[:, 2] = negative_rows
+        return triplets
+
+    negative_pool = [class_id for class_id in negative_classes]
+    if len(negative_pool) < 2:
+        raise ValueError("Global triplet mining needs at least two non-empty training classes")
+    global_to_train = {int(global_class_ids[local_id]): local_id for local_id in negative_pool}
+
+    for row, class_index_value in enumerate(selected_anchor_classes):
+        anchor_class = int(class_index_value)
+        selected_negative_class = None
+        if negative_mode == "auto_clusters" and directed_probability > 0 and negative_rng.random() < directed_probability:
+            neighbors = class_graph.neighbors.get(int(global_class_ids[anchor_class]), set())
+            candidates = sorted(
+                global_to_train[int(neighbor)]
+                for neighbor in neighbors
+                if int(neighbor) in global_to_train and global_to_train[int(neighbor)] != anchor_class
+            )
+            if candidates:
+                selected_negative_class = negative_rng.choice(candidates)
+        elif negative_mode not in ("random", "auto_clusters"):
+            raise ValueError(f"Unsupported negative sampler {negative_mode!r} in triplet mode")
+
+        if selected_negative_class is None:
+            candidates = [class_id for class_id in negative_pool if class_id != anchor_class]
+            selected_negative_class = negative_rng.choice(candidates)
+        negative_index = negative_rng.randrange(len(refs_by_class[selected_negative_class]))
+        triplets[row, 2] = offsets[selected_negative_class] + negative_index
+    return triplets
+
+
+class TripletIndexBatchSampler:
+    """Yield microbatches of triplet row IDs while retaining logical-batch boundaries."""
+
+    def __init__(self, batch_count: int, batch_size: int, minibatch_size: int, generate_batch):
+        self.batch_count = int(batch_count)
+        self.batch_size = int(batch_size)
+        self.minibatch_size = int(minibatch_size)
+        if min(self.batch_count, self.batch_size, self.minibatch_size) <= 0:
+            raise ValueError("Triplet batch_count, batch_size, and minibatch_size must be positive")
+        if self.batch_size % self.minibatch_size:
+            raise ValueError("Triplet batch_size must be divisible by minibatch_size")
+        self.generate_batch = generate_batch
+
+    def __len__(self):
+        return self.batch_count * (self.batch_size // self.minibatch_size)
+
+    def __iter__(self):
+        for _ in range(self.batch_count):
+            triplets = self.generate_batch()
+            for offset in range(0, self.batch_size, self.minibatch_size):
+                yield [tuple(map(int, row)) for row in triplets[offset:offset + self.minibatch_size]]
+
+
 def make_triplets(
     embeddings: torch.Tensor,
     labels: torch.Tensor,
