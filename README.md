@@ -111,6 +111,12 @@ image/text payloads are loaded only for each GPU microbatch. CATML computes the
 radius of each microbatch sample against the shared snapshot centers; the
 centers are detached from that microbatch's backward pass.
 
+Every APM-probability or class-graph/centroid update is written as a separate
+class-keyed JSON file under `<run>/sampler_updates/`. After training, the runner
+writes `<run>/training_curves.png` as an overview, plus separate diagnostic
+plots for loss components, validation metrics, APM probability concentration,
+and cluster structure when those data are available.
+
 Do not change a split manifest, dataset inventory, objective, sampler, model, or
 evaluation distance within a comparison series. Create a distinct config and
 record the change as a separate experiment. The runner checks manifest hashes

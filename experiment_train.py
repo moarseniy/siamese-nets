@@ -229,6 +229,407 @@ def _precompute_training_embedding_bank(
     return features, labels
 
 
+def _write_sampler_update(
+    output_dir: Path,
+    epoch: int,
+    update_index: int,
+    event: str,
+    train_classes: list[str],
+    catalog_labels: list[str],
+    *,
+    apm_probabilities: np.ndarray | None = None,
+    class_graph: ClassGraph | None = None,
+    centers: torch.Tensor | None = None,
+    center_observed: torch.Tensor | None = None,
+) -> Path:
+    """Write a class-keyed JSON record for one APM or centroid/graph update."""
+    payload = {"epoch": int(epoch) + 1, "update": int(update_index), "event": event}
+    global_to_label = {index: label for index, label in enumerate(catalog_labels)}
+    global_ids = {label: index for index, label in enumerate(catalog_labels)}
+
+    if centers is not None:
+        centers_cpu = centers.detach().float().cpu()
+        if center_observed is None:
+            observed = torch.ones(centers_cpu.shape[0], dtype=torch.bool)
+        else:
+            observed = center_observed.detach().bool().cpu()
+        payload["centroids"] = {
+            label: centers_cpu[global_ids[label]].tolist()
+            for label in train_classes
+            if observed[global_ids[label]]
+        }
+
+    if class_graph is not None:
+        train_global_ids = {global_ids[label] for label in train_classes}
+        cluster_by_class = {}
+        for group in class_graph.clusters:
+            members = [
+                global_to_label[class_id]
+                for class_id in sorted(group)
+                if class_id in train_global_ids
+            ]
+            for class_id in group:
+                if class_id in train_global_ids:
+                    cluster_by_class[global_to_label[class_id]] = members
+        payload["clusters"] = {label: cluster_by_class.get(label, []) for label in train_classes}
+
+    if apm_probabilities is not None:
+        probabilities = np.asarray(apm_probabilities, dtype=np.float64)
+        if len(probabilities) != len(train_classes):
+            raise ValueError("APM probabilities do not match the training class list")
+        payload["apm_probabilities"] = {
+            label: float(probabilities[index])
+            for index, label in enumerate(train_classes)
+        }
+
+    update_dir = output_dir / "sampler_updates"
+    update_dir.mkdir(parents=True, exist_ok=True)
+    path = update_dir / f"epoch_{epoch + 1:04d}_update_{update_index:04d}_{event}.json"
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
+def _save_training_plot_fallback(
+    output_dir: Path,
+    epochs: list[int],
+    train_losses: list[float],
+    validation_loss: list[float],
+    validation_metric: list[float],
+    primary_metric: str | None,
+) -> Path:
+    """Draw a simple PNG with Pillow when the Matplotlib binary stack is unavailable."""
+    from PIL import ImageDraw
+
+    has_metric = bool(np.isfinite(validation_metric).any())
+    panel_height = 360
+    width = 1200
+    height = panel_height * (2 if has_metric else 1) + 30
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    x_min, x_max = min(epochs), max(epochs)
+    if x_min == x_max:
+        x_max = x_min + 1
+
+    def panel(top: int, title: str, ylabel: str, series: list[tuple[str, list[float], tuple[int, int, int]]]):
+        left, right, chart_top, bottom = 95, width - 35, top + 45, top + panel_height - 55
+        finite_values = [value for _, values, _ in series for value in values if np.isfinite(value)]
+        if not finite_values:
+            return
+        y_min, y_max = min(finite_values), max(finite_values)
+        if y_min == y_max:
+            pad = max(0.5, abs(y_min) * 0.05)
+            y_min, y_max = y_min - pad, y_max + pad
+        else:
+            pad = (y_max - y_min) * 0.08
+            y_min, y_max = y_min - pad, y_max + pad
+        draw.text((left, top + 8), title, fill=(20, 20, 20))
+        draw.text((18, chart_top), ylabel, fill=(50, 50, 50))
+        for tick in range(6):
+            fraction = tick / 5
+            y = int(bottom - fraction * (bottom - chart_top))
+            value = y_min + fraction * (y_max - y_min)
+            draw.line((left, y, right, y), fill=(225, 225, 225), width=1)
+            draw.text((left - 55, y - 7), f"{value:.3g}", fill=(80, 80, 80))
+        draw.line((left, chart_top, left, bottom), fill=(70, 70, 70), width=2)
+        draw.line((left, bottom, right, bottom), fill=(70, 70, 70), width=2)
+        draw.text((left, bottom + 12), str(min(epochs)), fill=(80, 80, 80))
+        draw.text((right - 30, bottom + 12), str(max(epochs)), fill=(80, 80, 80))
+        legend_x = left + 15
+        for name, values, color in series:
+            points = []
+            for epoch, value in zip(epochs, values):
+                if not np.isfinite(value):
+                    if len(points) > 1:
+                        draw.line(points, fill=color, width=3)
+                    points = []
+                    continue
+                x = left + (epoch - x_min) / (x_max - x_min) * (right - left)
+                y = bottom - (value - y_min) / (y_max - y_min) * (bottom - chart_top)
+                points.append((int(x), int(y)))
+            if len(points) > 1:
+                draw.line(points, fill=color, width=3)
+            for point_x, point_y in points:
+                draw.ellipse((point_x - 4, point_y - 4, point_x + 4, point_y + 4), fill=color)
+            draw.line((legend_x, top + 32, legend_x + 24, top + 32), fill=color, width=3)
+            draw.text((legend_x + 30, top + 25), name, fill=(50, 50, 50))
+            legend_x += 180
+
+    loss_series = [("train loss", train_losses, (35, 95, 190))]
+    if np.isfinite(validation_loss).any():
+        loss_series.append(("validation loss", validation_loss, (205, 75, 55)))
+    panel(0, "Training loss", "Loss", loss_series)
+    if has_metric:
+        panel(panel_height, f"Validation: {primary_metric}", str(primary_metric), [
+            (str(primary_metric), validation_metric, (35, 145, 90)),
+        ])
+    output_path = output_dir / "training_curves.png"
+    image.save(output_path)
+    return output_path
+
+
+def _save_training_plot(metrics_path: Path, output_dir: Path, primary_metric: str | None) -> Path | None:
+    """Render train loss and the configured validation metric after training."""
+    if not metrics_path.is_file():
+        return None
+    rows = []
+    with metrics_path.open(encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    training_rows = [row for row in rows if isinstance(row.get("train_loss"), (int, float))]
+    epochs = [int(row["epoch"]) + 1 for row in training_rows]
+    train_losses = [float(row["train_loss"]) for row in training_rows]
+    if not epochs:
+        return None
+    validation_metric = []
+    validation_loss = []
+    for row in training_rows:
+        validation = row.get("validation") or {}
+        metric_value = validation.get(primary_metric) if primary_metric else None
+        validation_metric.append(float(metric_value) if isinstance(metric_value, (int, float)) else np.nan)
+        value = validation.get("loss")
+        validation_loss.append(float(value) if isinstance(value, (int, float)) else np.nan)
+
+    output_path = output_dir / "training_curves.png"
+    try:
+        from importlib.metadata import version
+        matplotlib_version = tuple(int(part) for part in version("matplotlib").split(".")[:2])
+        numpy_major = int(np.__version__.split(".")[0])
+        if numpy_major >= 2 and matplotlib_version < (3, 9):
+            raise ImportError("Matplotlib < 3.9 is not compatible with this NumPy 2 installation")
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        has_metric = np.isfinite(validation_metric).any()
+        has_validation_loss = np.isfinite(validation_loss).any()
+        panel_count = 2 if has_metric else 1
+        figure, axes = plt.subplots(panel_count, 1, figsize=(10, 4.5 * panel_count), squeeze=False)
+        loss_axis = axes[0, 0]
+        loss_axis.plot(epochs, train_losses, label="train loss", marker="o", linewidth=1.8)
+        if has_validation_loss:
+            loss_axis.plot(epochs, validation_loss, label="validation loss", marker="o", linewidth=1.5)
+        loss_axis.set_xlabel("Epoch")
+        loss_axis.set_ylabel("Loss")
+        loss_axis.set_title("Training loss")
+        loss_axis.grid(True, alpha=0.25)
+        loss_axis.legend()
+        if has_metric:
+            metric_axis = axes[1, 0]
+            metric_axis.plot(epochs, validation_metric, label=f"validation {primary_metric}", marker="o", linewidth=1.8)
+            metric_axis.set_xlabel("Epoch")
+            metric_axis.set_ylabel(primary_metric or "Validation metric")
+            metric_axis.set_title(f"Validation: {primary_metric}")
+            metric_axis.grid(True, alpha=0.25)
+            metric_axis.legend()
+        figure.tight_layout()
+        figure.savefig(output_path, dpi=160)
+        plt.close(figure)
+    except Exception as exc:
+        print(f"Matplotlib plot unavailable ({exc}); writing a Pillow fallback.")
+        output_path = _save_training_plot_fallback(
+            output_dir, epochs, train_losses, validation_loss, validation_metric, primary_metric
+        )
+    return output_path
+
+
+def _save_simple_line_plot(
+    output_path: Path,
+    title: str,
+    x_label: str,
+    y_label: str,
+    x_values: list[float],
+    series: list[tuple[str, list[float]]],
+) -> Path | None:
+    """Render a compact dependency-free diagnostic plot with Pillow."""
+    from PIL import ImageDraw
+
+    finite = [value for _, values in series for value in values if np.isfinite(value)]
+    if not finite or not x_values:
+        return None
+    width, height = 1200, 520
+    left, right, top, bottom = 100, width - 35, 70, height - 70
+    x_min, x_max = min(x_values), max(x_values)
+    if x_min == x_max:
+        x_max = x_min + 1.0
+    y_min, y_max = min(finite), max(finite)
+    if y_min == y_max:
+        pad = max(0.5, abs(y_min) * 0.05)
+        y_min, y_max = y_min - pad, y_max + pad
+    else:
+        pad = (y_max - y_min) * 0.08
+        y_min, y_max = y_min - pad, y_max + pad
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((left, 20), title, fill=(20, 20, 20))
+    draw.text((18, top), y_label, fill=(50, 50, 50))
+    draw.text((right - 50, bottom + 32), x_label, fill=(50, 50, 50))
+    for tick in range(6):
+        fraction = tick / 5
+        y = int(bottom - fraction * (bottom - top))
+        value = y_min + fraction * (y_max - y_min)
+        draw.line((left, y, right, y), fill=(225, 225, 225), width=1)
+        draw.text((left - 60, y - 7), f"{value:.3g}", fill=(80, 80, 80))
+    draw.line((left, top, left, bottom), fill=(70, 70, 70), width=2)
+    draw.line((left, bottom, right, bottom), fill=(70, 70, 70), width=2)
+    draw.text((left, bottom + 12), f"{x_min:g}", fill=(80, 80, 80))
+    draw.text((right - 30, bottom + 12), f"{x_max:g}", fill=(80, 80, 80))
+
+    palette = [(35, 95, 190), (205, 75, 55), (35, 145, 90), (145, 80, 180), (210, 145, 30), (40, 150, 165)]
+    legend_x, legend_y = left + 12, 45
+    for series_index, (name, values) in enumerate(series):
+        color = palette[series_index % len(palette)]
+        points = []
+        for x_value, y_value in zip(x_values, values):
+            if not np.isfinite(y_value):
+                if len(points) > 1:
+                    draw.line(points, fill=color, width=3)
+                points = []
+                continue
+            x = left + (x_value - x_min) / (x_max - x_min) * (right - left)
+            y = bottom - (y_value - y_min) / (y_max - y_min) * (bottom - top)
+            points.append((int(x), int(y)))
+        if len(points) > 1:
+            draw.line(points, fill=color, width=3)
+        for point_x, point_y in points:
+            draw.ellipse((point_x - 4, point_y - 4, point_x + 4, point_y + 4), fill=color)
+        draw.line((legend_x, legend_y + 7, legend_x + 22, legend_y + 7), fill=color, width=3)
+        draw.text((legend_x + 28, legend_y), name, fill=(50, 50, 50))
+        legend_x += max(150, 30 + len(name) * 8)
+        if legend_x > right - 150:
+            legend_x, legend_y = left + 12, legend_y + 20
+
+    image.save(output_path)
+    return output_path
+
+
+def _save_training_diagnostics(metrics_path: Path, output_dir: Path, primary_metric: str | None) -> list[Path]:
+    """Save component, validation, APM, and cluster-structure diagnostic plots."""
+    rows = []
+    if metrics_path.is_file():
+        with metrics_path.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    training_rows = [row for row in rows if isinstance(row.get("train_loss"), (int, float))]
+    epochs = [float(row["epoch"]) + 1 for row in training_rows]
+    outputs = []
+
+    component_names = ("triplet", "cluster", "classification_loss", "proxy_anchor_loss")
+    component_series = []
+    for name in component_names:
+        values = [float(row[name]) if isinstance(row.get(name), (int, float)) else np.nan for row in training_rows]
+        if np.isfinite(values).any():
+            component_series.append((name, values))
+    if component_series:
+        component_series.insert(0, ("train_loss", [float(row["train_loss"]) for row in training_rows]))
+        path = _save_simple_line_plot(
+            output_dir / "loss_components.png", "Training loss components", "Epoch", "Loss",
+            epochs, component_series,
+        )
+        if path is not None:
+            outputs.append(path)
+
+    validation_keys = set()
+    for row in training_rows:
+        validation = row.get("validation") or {}
+        for key, value in validation.items():
+            if isinstance(value, (int, float)) and "threshold" not in key.lower() and key != "loss":
+                validation_keys.add(key)
+    ordered_validation_keys = []
+    if primary_metric in validation_keys:
+        ordered_validation_keys.append(primary_metric)
+    ordered_validation_keys.extend(sorted(validation_keys - set(ordered_validation_keys)))
+    if ordered_validation_keys:
+        validation_series = []
+        for key in ordered_validation_keys:
+            values = []
+            for row in training_rows:
+                value = (row.get("validation") or {}).get(key)
+                values.append(float(value) if isinstance(value, (int, float)) else np.nan)
+            validation_series.append((key, values))
+        path = _save_simple_line_plot(
+            output_dir / "validation_metrics.png", "Validation metrics", "Epoch", "Metric",
+            epochs, validation_series,
+        )
+        if path is not None:
+            outputs.append(path)
+
+    sampler_dir = output_dir / "sampler_updates"
+    events = []
+    if sampler_dir.is_dir():
+        for path in sorted(sampler_dir.glob("*.json")):
+            try:
+                event = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+    max_update_by_epoch: dict[int, int] = {}
+    for event in events:
+        event_epoch = int(event.get("epoch", 1))
+        max_update_by_epoch[event_epoch] = max(max_update_by_epoch.get(event_epoch, 0), int(event.get("update", 1)))
+
+    def event_x(event: dict) -> float:
+        event_epoch = int(event.get("epoch", 1))
+        update = int(event.get("update", 1))
+        return (event_epoch - 1) + update / (max_update_by_epoch.get(event_epoch, update) + 1)
+
+    apm_events = [event for event in events if isinstance(event.get("apm_probabilities"), dict)]
+    if apm_events:
+        apm_x = [event_x(event) for event in apm_events]
+        normalized_entropy, maximum_probability = [], []
+        for event in apm_events:
+            values = np.asarray(list(event["apm_probabilities"].values()), dtype=np.float64)
+            total = values.sum()
+            probabilities = values / total if total > 0 else values
+            positive = probabilities[probabilities > 0]
+            entropy = -float(np.sum(positive * np.log(positive))) if positive.size else 0.0
+            normalized_entropy.append(entropy / math.log(len(values)) if len(values) > 1 else 0.0)
+            maximum_probability.append(float(probabilities.max()) if len(probabilities) else 0.0)
+        path = _save_simple_line_plot(
+            output_dir / "apm_probabilities.png", "APM distribution", "Epoch", "Value",
+            apm_x, [("normalized entropy", normalized_entropy), ("max class probability", maximum_probability)],
+        )
+        if path is not None:
+            outputs.append(path)
+
+    graph_events = [event for event in events if event.get("event") == "class_graph" and isinstance(event.get("clusters"), dict)]
+    if graph_events:
+        graph_x = [event_x(event) for event in graph_events]
+        cluster_counts, clustered_class_counts, largest_clusters = [], [], []
+        for event in graph_events:
+            unique_groups = {
+                tuple(sorted(members))
+                for members in event["clusters"].values()
+                if isinstance(members, list) and len(members) > 1
+            }
+            sizes = [len(group) for group in unique_groups]
+            cluster_counts.append(float(len(sizes)))
+            clustered_class_counts.append(float(sum(sizes)))
+            largest_clusters.append(float(max(sizes, default=0)))
+        path = _save_simple_line_plot(
+            output_dir / "cluster_structure.png", "Auto-clustering graph", "Epoch", "Classes / clusters",
+            graph_x,
+            [("clusters", cluster_counts), ("classes in clusters", clustered_class_counts), ("largest cluster", largest_clusters)],
+        )
+        if path is not None:
+            outputs.append(path)
+
+    return outputs
+
+
 def _class_ids(names: list[str], mapping: dict[str, int], device: torch.device) -> torch.Tensor:
     return torch.tensor([mapping[name] for name in names], device=device, dtype=torch.long)
 
@@ -1144,6 +1545,20 @@ def run(
         scaler.load_state_dict(state["scaler"])
 
     for epoch in range(start_epoch, int(train_cfg.get("epochs", 10))):
+        sampler_update_counter = [0]
+
+        def save_sampler_event(event: str, **state_values) -> None:
+            sampler_update_counter[0] += 1
+            _write_sampler_update(
+                output_dir,
+                epoch,
+                sampler_update_counter[0],
+                event,
+                train_classes,
+                catalog.labels,
+                **state_values,
+            )
+
         if sampler is not None:
             sampler.set_epoch(epoch)
         # Non-persistent workers are re-seeded deterministically per epoch, so
@@ -1175,6 +1590,12 @@ def run(
             if bank_embeddings is not None and shared_center_observed_train.any():
                 apm.update_shared_centers(bank_embeddings, bank_labels, shared_centers_train, shared_center_observed_train)
             anchor_probabilities = apm.probabilities()
+            save_sampler_event(
+                "apm_probabilities",
+                apm_probabilities=anchor_probabilities,
+                centers=shared_centers,
+                center_observed=shared_center_observed,
+            )
         else:
             anchor_probabilities = None
         shared_center_ids = torch.where(shared_center_observed)[0].detach().cpu().tolist() if batch_mode == "global" else []
@@ -1195,6 +1616,11 @@ def run(
         center_count = torch.zeros(len(catalog.labels), device=device)
         if batch_mode == "pk":
             for step, batch in enumerate(loader):
+                if step == 0 and apm is not None and sampler.last_probabilities is not None:
+                    save_sampler_event(
+                        "apm_probabilities",
+                        apm_probabilities=sampler.last_probabilities,
+                    )
                 labels = batch["label"].to(device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
@@ -1242,11 +1668,23 @@ def run(
                     active = torch.where(center_count > 0)[0]
                     centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
                     class_graph.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+                    save_sampler_event(
+                        "class_graph",
+                        class_graph=class_graph,
+                        centers=centers,
+                        center_observed=center_count > 0,
+                    )
 
             if sampler_config.get("negative") == "auto_clusters" and center_count.any():
                 active = torch.where(center_count > 0)[0]
                 centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
                 class_graph.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+                save_sampler_event(
+                    "class_graph",
+                    class_graph=class_graph,
+                    centers=centers,
+                    center_observed=center_count > 0,
+                )
             steps = max(1, len(loader))
         else:
             logical_batch_size = int(train_cfg["batch_size"])
@@ -1362,6 +1800,12 @@ def run(
                 shared_centers.index_copy_(0, active, centers.index_select(0, active))
                 shared_center_observed.zero_()
                 shared_center_observed[active] = True
+                save_sampler_event(
+                    "class_graph" if sampler_config.get("negative") == "auto_clusters" else "centroid_snapshot",
+                    class_graph=class_graph if sampler_config.get("negative") == "auto_clusters" else None,
+                    centers=shared_centers,
+                    center_observed=shared_center_observed,
+                )
                 cluster_center_sum.zero_()
                 cluster_center_count.zero_()
             del triplet_loader, triplet_batch_sampler
@@ -1433,6 +1877,20 @@ def run(
             torch.save(checkpoint, output_dir / "best.pt")
         if device.type == "cuda":
             print(f"peak_gpu_memory_gib={torch.cuda.max_memory_allocated(device) / 2**30:.2f}")
+
+    plot_path = _save_training_plot(
+        log_path,
+        output_dir,
+        config.get("validation", {}).get("primary_metric") or ("recall@1" if config["task"] == "metric" else "accuracy"),
+    )
+    if plot_path is not None:
+        print(f"Training plot saved: {plot_path}")
+    for diagnostic_path in _save_training_diagnostics(
+        log_path,
+        output_dir,
+        config.get("validation", {}).get("primary_metric") or ("recall@1" if config["task"] == "metric" else "accuracy"),
+    ):
+        print(f"Training diagnostic saved: {diagnostic_path}")
 
     checkpoint_selection = config.get("test", {}).get("checkpoint", "best")
     selected_path = output_dir / ("last.pt" if checkpoint_selection == "last" else "best.pt")

@@ -223,6 +223,7 @@ class PKBatchSampler:
         self.data_split_seed = int(seed if data_split_seed is None else data_split_seed)
         self.epoch = 0
         self.apm = apm
+        self.last_probabilities: np.ndarray | None = None
         self.examples_per_class = int(examples_per_class) if examples_per_class not in (None, "all") else None
         if self.classes_per_batch < 2:
             raise ValueError("Metric learning needs at least two classes per batch")
@@ -231,6 +232,7 @@ class PKBatchSampler:
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
+        self.last_probabilities = None
 
     def __len__(self):
         return self.steps_per_epoch
@@ -238,6 +240,7 @@ class PKBatchSampler:
     def __iter__(self):
         rng = random.Random(self.seed + self.epoch)
         probs = self.apm.probabilities() if self.apm is not None else None
+        self.last_probabilities = probs.copy() if probs is not None else None
         for _ in range(self.steps_per_epoch):
             if probs is None:
                 selected = rng.sample(range(len(self.labels)), self.classes_per_batch)
