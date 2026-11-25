@@ -8,6 +8,8 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from experiment_sampling import ClassGraph, TripletIndexBatchSampler, generate_triplet_batch, mine_global_negatives
+from experiment_losses import CATMLLoss
+from experiment_sampling import APMState
 
 
 class GlobalMiningTests(unittest.TestCase):
@@ -109,6 +111,30 @@ class GlobalMiningTests(unittest.TestCase):
         batches = list(loader)
         self.assertEqual(len(batches), 4)
         self.assertEqual(batches[0], [(0, 1, 2), (3, 4, 5)])
+
+    def test_apm_measures_radii_to_the_shared_centers(self):
+        apm = APMState(["a", "b"], ema=0.5)
+        centers = torch.tensor([[1.0, 0.0], [0.0, 2.0]])
+        apm.update_shared_centers(
+            torch.tensor([[0.0, 0.0], [2.0, 0.0], [0.0, 3.0]]),
+            torch.tensor([0, 0, 1]),
+            centers,
+            torch.tensor([True, True]),
+        )
+        np.testing.assert_allclose(apm.radii, [1.0, 1.0])
+        self.assertTrue(apm.observed.all())
+
+    def test_catml_uses_explicit_shared_centers(self):
+        embeddings = torch.tensor([[0.0, 0.0], [2.0, 0.0], [0.0, 3.0]])
+        labels = torch.tensor([0, 0, 1])
+        centers = {0: torch.tensor([1.0, 0.0]), 1: torch.tensor([0.0, 2.0])}
+        objective = CATMLLoss(center_mode="current", rho=0.0, tau=0.0, xi=1.0)
+        _, metrics = objective(
+            embeddings, labels, torch.tensor([0]), torch.tensor([1]), torch.tensor([2]),
+            fixed_centers=centers,
+        )
+        expected = torch.tensor([1.0, 1.0, 1.0]).mean()
+        torch.testing.assert_close(metrics["cluster"], expected)
 
 
 if __name__ == "__main__":

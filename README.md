@@ -87,19 +87,26 @@ logical batch), `training.batch_count` (optimizer updates per epoch), and
 `batch_size`).
 
 In triplet mode, `random` samples negatives globally; `global_hard` and
-`semi_hard` first encode the full training split with the current model and
-search that frozen embedding bank exactly, using deterministic inference
-preprocessing. Optional `training.mining_batch_size` controls the GPU batch size
-for this pass and defaults to `evaluation.batch_size`. `auto_clusters` chooses from the
-global class graph without requiring the neighboring class to be in the same
-batch. Its centers accumulate over training batches and are rebuilt every
-`sampler.make_cluster_on_epoch` epochs. Global hard mining has quadratic search
-cost in the number of anchors and training examples. The feature bank is stored
-on the host; distance search streams it to the GPU in chunks. Triplet mode also
-keeps the sample-reference index on the host, while image/text payloads are
-loaded only for each GPU microbatch. For CATML in triplet mode, the class-radius
-term is computed within each GPU microbatch, so its center scope is
-`minibatch_size`.
+`semi_hard` search the full training set exactly using a frozen embedding bank.
+After the first shared centroid snapshot exists, APM also uses that bank to
+calculate class radii. The bank is built when global hard/semi-hard mining is
+enabled or when APM can use a snapshot, using deterministic inference
+preprocessing. Optional `training.mining_batch_size` controls its GPU
+batch size and defaults to `evaluation.batch_size`. `auto_clusters` chooses
+from the global class graph without requiring the neighboring class to be in
+the same batch. Its centers accumulate over training batches and are rebuilt
+every `sampler.make_cluster_on_epoch` epochs. That published centroid snapshot
+is shared by Auto-clustering, APM radius measurements, and CATML's radius term.
+APM updates its class probabilities each epoch using radii to the active
+snapshot. Before the first snapshot exists, APM uses its uniform fallback and
+CATML uses microbatch centers.
+
+Global hard mining has cost proportional to anchors × train examples. The
+feature bank is stored on the host; distance search streams it to the GPU in
+chunks. Triplet mode also keeps the sample-reference index on the host, while
+image/text payloads are loaded only for each GPU microbatch. CATML computes the
+radius of each microbatch sample against the shared snapshot centers; the
+centers are detached from that microbatch's backward pass.
 
 Do not change a split manifest, dataset inventory, objective, sampler, model, or
 evaluation distance within a comparison series. Create a distinct config and

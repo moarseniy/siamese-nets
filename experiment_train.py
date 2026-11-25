@@ -1036,6 +1036,9 @@ def run(
     if config["task"] == "classification" or config.get("classification_head", False):
         classifier = nn.Linear(model.output_dim, len(train_classes)).to(device)
     loss_name, objective = _make_objective(config, len(train_classes), model.output_dim, device)
+    uses_shared_centroids = batch_mode == "triplets" and (
+        loss_name == "catml" or apm is not None or sampler_config.get("negative") == "auto_clusters"
+    )
     optimizer_parameters = list(model.parameters())
     if classifier is not None:
         optimizer_parameters.extend(classifier.parameters())
@@ -1057,6 +1060,8 @@ def run(
     class_graph = ClassGraph(len(catalog.labels), max_cluster_size=int(sampler_config.get("cluster_max_size", 200)))
     cluster_center_sum = torch.zeros((len(catalog.labels), model.output_dim), device=device)
     cluster_center_count = torch.zeros(len(catalog.labels), device=device)
+    shared_centers = torch.zeros((len(catalog.labels), model.output_dim), device=device)
+    shared_center_observed = torch.zeros(len(catalog.labels), dtype=torch.bool, device=device)
     tokenizer = None
     if catalog.modality == "text":
         from transformers import AutoTokenizer
@@ -1081,6 +1086,9 @@ def run(
         "gpu_memory_bytes": props.total_memory,
         "compute_capability": [props.major, props.minor],
         "python_seed": config["seed"],
+        "batch_mode": batch_mode,
+        "triplet_centroid_source": "shared_triplet_snapshot" if batch_mode == "triplets" else "current_batch",
+        "triplet_catml_center_gradient": "shared_snapshot_detached_after_warmup" if batch_mode == "triplets" and loss_name == "catml" else None,
     }
     (output_dir / "resolved_config.json").write_text(json.dumps(resolved_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1115,6 +1123,10 @@ def run(
         if batch_mode == "triplets" and cluster_accumulator:
             cluster_center_sum.copy_(cluster_accumulator["sum"].to(device))
             cluster_center_count.copy_(cluster_accumulator["count"].to(device))
+        shared_centroid_state = state.get("shared_centroids")
+        if batch_mode == "triplets" and shared_centroid_state:
+            shared_centers.copy_(shared_centroid_state["centers"].to(device))
+            shared_center_observed.copy_(shared_centroid_state["observed"].to(device))
         start_epoch = int(state["epoch"]) + 1
     else:
         start_epoch = 0
@@ -1140,7 +1152,10 @@ def run(
             worker_generator.manual_seed(config["seed"] + epoch)
         bank_embeddings = None
         bank_labels = None
-        if batch_mode == "triplets" and sampler_config.get("negative") in ("global_hard", "semi_hard"):
+        if batch_mode == "triplets" and (
+            sampler_config.get("negative") in ("global_hard", "semi_hard")
+            or (apm is not None and shared_center_observed.any())
+        ):
             print(f"Building global mining embedding bank for epoch {epoch} ({triplet_offsets[-1]} samples)")
             bank_embeddings, bank_labels = _precompute_training_embedding_bank(
                 model,
@@ -1154,7 +1169,18 @@ def run(
                 amp_enabled,
                 amp_dtype,
             )
-        anchor_probabilities = apm.probabilities() if batch_mode == "triplets" and apm is not None else None
+        shared_centers_train = shared_centers.index_select(0, train_catalog_ids) if batch_mode == "triplets" else None
+        shared_center_observed_train = shared_center_observed.index_select(0, train_catalog_ids) if batch_mode == "triplets" else None
+        if batch_mode == "triplets" and apm is not None:
+            if bank_embeddings is not None and shared_center_observed_train.any():
+                apm.update_shared_centers(bank_embeddings, bank_labels, shared_centers_train, shared_center_observed_train)
+            anchor_probabilities = apm.probabilities()
+        else:
+            anchor_probabilities = None
+        shared_center_ids = torch.where(shared_center_observed)[0].detach().cpu().tolist() if batch_mode == "triplets" else []
+        shared_fixed_centers = {
+            int(class_id): shared_centers[int(class_id)] for class_id in shared_center_ids
+        }
         triplet_rng = random.Random(config["seed"] + epoch)
         triplet_negative_rng = random.Random(config["seed"] + epoch + 104729)
         triplet_np_rng = np.random.default_rng(config["seed"] + epoch)
@@ -1271,8 +1297,6 @@ def run(
             microbatches_per_logical = logical_batch_size // minibatch_size
             logical_loss = 0.0
             logical_metrics: dict[str, float] = {}
-            apm_embedding_parts = []
-            apm_label_parts = []
             optimizer.zero_grad(set_to_none=True)
             for microbatch_index, batch in enumerate(triplet_loader):
                 step = microbatch_index // microbatches_per_logical
@@ -1280,8 +1304,6 @@ def run(
                 if in_logical_index == 0:
                     logical_loss = 0.0
                     logical_metrics = {}
-                    apm_embedding_parts = []
-                    apm_label_parts = []
                     optimizer.zero_grad(set_to_none=True)
 
                 labels = batch["label"].to(device, non_blocking=True)
@@ -1291,7 +1313,12 @@ def run(
                 with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
                     embeddings = _forward(model, batch, catalog.modality, tokenizer, device, int(config["model"].get("max_length", 128)))
                     if loss_name == "catml":
-                        loss, batch_metrics = objective(embeddings, labels, *triple_indices)
+                        loss, batch_metrics = objective(
+                            embeddings,
+                            labels,
+                            *triple_indices,
+                            fixed_centers=shared_fixed_centers or None,
+                        )
                     else:
                         loss, batch_metrics = _batch_loss(
                             loss_name, embeddings, labels, triple_indices,
@@ -1306,12 +1333,9 @@ def run(
                 for key, value in batch_metrics.items():
                     logical_metrics[key] = logical_metrics.get(key, 0.0) + float(value.detach().float().item()) * weight
 
-                if apm is not None:
-                    apm_embedding_parts.append(embeddings.detach())
-                    apm_label_parts.append(_class_ids(batch["class_name"], train_label_ids, device))
                 center_sum.index_add_(0, labels, embeddings.detach().float())
                 center_count.index_add_(0, labels, torch.ones_like(labels, dtype=torch.float32))
-                if sampler_config.get("negative") == "auto_clusters":
+                if uses_shared_centroids:
                     cluster_center_sum.index_add_(0, labels, embeddings.detach().float())
                     cluster_center_count.index_add_(0, labels, torch.ones_like(labels, dtype=torch.float32))
 
@@ -1321,23 +1345,25 @@ def run(
                     epoch_loss += logical_loss
                     for key, value in logical_metrics.items():
                         epoch_metrics[key] = epoch_metrics.get(key, 0.0) + value
-                    if apm is not None:
-                        apm.update(torch.cat(apm_embedding_parts, dim=0), torch.cat(apm_label_parts, dim=0))
             steps = max(1, batch_count)
 
-            if sampler_config.get("negative") == "auto_clusters":
-                cluster_period = int(sampler_config.get("make_cluster_on_epoch", 1))
-                if (epoch + 1) % cluster_period == 0 and cluster_center_count.any():
-                    active = torch.where(cluster_center_count > 0)[0]
-                    centers = cluster_center_sum / cluster_center_count.clamp_min(1).unsqueeze(1)
+            cluster_period = int(sampler_config.get("make_cluster_on_epoch", 1))
+            if uses_shared_centroids and (epoch + 1) % cluster_period == 0 and cluster_center_count.any():
+                active = torch.where(cluster_center_count > 0)[0]
+                centers = cluster_center_sum / cluster_center_count.clamp_min(1).unsqueeze(1)
+                if sampler_config.get("negative") == "auto_clusters":
                     class_graph.update(
                         centers,
                         active,
                         fraction=float(sampler_config.get("cluster_fraction", 0.002)),
                         max_edges=int(sampler_config.get("cluster_max_edges", 10000)),
                     )
-                    cluster_center_sum.zero_()
-                    cluster_center_count.zero_()
+                shared_centers.zero_()
+                shared_centers.index_copy_(0, active, centers.index_select(0, active))
+                shared_center_observed.zero_()
+                shared_center_observed[active] = True
+                cluster_center_sum.zero_()
+                cluster_center_count.zero_()
             del triplet_loader, triplet_batch_sampler
             generate_current_logical_batch = None
             bank_embeddings = None
@@ -1384,6 +1410,10 @@ def run(
             "cluster_accumulator": {
                 "sum": cluster_center_sum.detach().cpu(),
                 "count": cluster_center_count.detach().cpu(),
+            } if batch_mode == "triplets" else None,
+            "shared_centroids": {
+                "centers": shared_centers.detach().cpu(),
+                "observed": shared_center_observed.detach().cpu(),
             } if batch_mode == "triplets" else None,
             "sampler_epoch": epoch + 1,
             "best_score": max(best_score, score),

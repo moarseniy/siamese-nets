@@ -23,6 +23,7 @@ BASE_FIELDS = (
     "backbone", "model_revision",
     "examples_per_class", "planned_epochs", "steps_per_epoch", "logical_batch_size", "batch_count",
     "minibatch_size", "mining_batch_size", "learning_rate", "precision",
+    "triplet_centroid_source", "triplet_catml_center_gradient",
     "gpu", "torch_version", "cuda_version", "primary_metric", "checkpoint",
 )
 
@@ -90,6 +91,8 @@ def metadata(config: dict) -> dict:
         "batch_count": training.get("batch_count"),
         "minibatch_size": training.get("minibatch_size"),
         "mining_batch_size": training.get("mining_batch_size"),
+        "triplet_centroid_source": runtime.get("triplet_centroid_source"),
+        "triplet_catml_center_gradient": runtime.get("triplet_catml_center_gradient"),
         "learning_rate": training.get("learning_rate"),
         "precision": hardware.get("precision"),
         "gpu": runtime.get("gpu_name"),

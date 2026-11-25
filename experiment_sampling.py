@@ -28,6 +28,13 @@ class APMState:
         self.observed = np.zeros(len(labels), dtype=bool)
         self.previous = np.full(len(labels), 1 / max(1, len(labels)), dtype=np.float64)
 
+    def _update_radii(self, batch_radii: np.ndarray, active: np.ndarray) -> None:
+        first_observation = active & ~self.observed
+        subsequent = active & self.observed
+        self.radii[first_observation] = batch_radii[first_observation]
+        self.radii[subsequent] = self.ema * self.radii[subsequent] + (1 - self.ema) * batch_radii[subsequent]
+        self.observed[active] = True
+
     def update(self, embeddings: torch.Tensor, labels: torch.Tensor) -> None:
         embeddings = embeddings.detach().float()
         labels = labels.detach().long()
@@ -41,11 +48,40 @@ class APMState:
         radii_sum.index_add_(0, labels, residuals)
         batch_radii = (radii_sum / counts.clamp_min(1)).cpu().numpy()
         active = (counts > 0).cpu().numpy()
-        first_observation = active & ~self.observed
-        subsequent = active & self.observed
-        self.radii[first_observation] = batch_radii[first_observation]
-        self.radii[subsequent] = self.ema * self.radii[subsequent] + (1 - self.ema) * batch_radii[subsequent]
-        self.observed[active] = True
+        self._update_radii(batch_radii, active)
+
+    @torch.no_grad()
+    def update_shared_centers(
+        self,
+        embeddings: torch.Tensor,
+        labels: torch.Tensor,
+        centers: torch.Tensor,
+        center_observed: torch.Tensor,
+    ) -> None:
+        """Update per-class radii against the shared centroid snapshot."""
+        embeddings = embeddings.detach().float().cpu()
+        labels = labels.detach().long().cpu()
+        centers = centers.detach().float().cpu()
+        center_observed = center_observed.detach().bool().cpu()
+        radii_sum = torch.zeros(len(self.labels), dtype=torch.float32)
+        counts = torch.zeros(len(self.labels), dtype=torch.float32)
+        chunk_size = 262144
+        for start in range(0, embeddings.shape[0], chunk_size):
+            stop = min(embeddings.shape[0], start + chunk_size)
+            chunk_labels = labels[start:stop]
+            valid = center_observed[chunk_labels]
+            if not valid.any():
+                continue
+            valid_labels = chunk_labels[valid]
+            residuals = torch.linalg.vector_norm(
+                embeddings[start:stop][valid] - centers[valid_labels], dim=1
+            )
+            radii_sum.index_add_(0, valid_labels, residuals)
+            counts.index_add_(0, valid_labels, torch.ones_like(valid_labels, dtype=torch.float32))
+        active = counts.numpy() > 0
+        if active.any():
+            batch_radii = (radii_sum / counts.clamp_min(1)).numpy().astype(np.float64)
+            self._update_radii(batch_radii, active)
 
     def probabilities(self) -> np.ndarray:
         weights = np.where(self.observed, np.maximum(self.radii, 0.0), 0.0) ** self.gamma

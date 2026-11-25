@@ -84,16 +84,15 @@ class CATMLLoss(nn.Module):
         center_sums = h.new_zeros((represented.numel(), h.shape[1]))
         center_sums.index_add_(0, inverse, h)
         centers = center_sums / counts.clamp_min(1).unsqueeze(1)
-        if self.center_mode == "fixed":
-            if fixed_centers is not None:
-                # The fixed-center path is a deliberate experimental variant;
-                # the current-center path below remains fully vectorized.
-                centers = torch.stack([
-                    fixed_centers.get(int(class_id), centers[index]).to(device=h.device, dtype=h.dtype)
-                    for index, class_id in enumerate(represented.detach().cpu().tolist())
-                ]).detach()
-            else:
-                centers = centers.detach()
+        if fixed_centers is not None:
+            # Explicit shared centers are detached snapshots. Missing classes
+            # fall back to the current batch center for their represented rows.
+            centers = torch.stack([
+                fixed_centers.get(int(class_id), centers[index]).to(device=h.device, dtype=h.dtype)
+                for index, class_id in enumerate(represented.detach().cpu().tolist())
+            ])
+        elif self.center_mode == "fixed":
+            centers = centers.detach()
         per_sample_radius = self._norm(h - centers[inverse])
         if self.class_weighting == "per_sample":
             # With w_c=m_c/B, sum_c w_c G_c equals this sample mean.
