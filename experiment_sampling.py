@@ -111,14 +111,20 @@ class APMState:
 class ClassClusters:
     """Groups of classes whose training centroids are considered close."""
 
-    def __init__(self, class_count: int, max_cluster_size: int = 200):
+    def __init__(self, class_count: int, max_cluster_size: int = 500):
         self.class_count = class_count
         self.max_cluster_size = int(max_cluster_size)
         self.members_by_class: dict[int, set[int]] = defaultdict(set)
         self.clusters: list[list[int]] = []
 
     @torch.no_grad()
-    def update(self, centers: torch.Tensor, active_ids: torch.Tensor, fraction: float = 0.002, max_edges: int = 10000) -> None:
+    def update(
+        self,
+        centers: torch.Tensor,
+        active_ids: torch.Tensor,
+        pair_fraction: float = 0.01,
+        max_pairs: int = 50000,
+    ) -> None:
         ids = active_ids.detach().long().unique(sorted=True)
         if ids.numel() < 2:
             self.members_by_class.clear()
@@ -126,7 +132,7 @@ class ClassClusters:
             return
         points = centers[ids].detach().float()
         pair_count = ids.numel() * (ids.numel() - 1) // 2
-        keep = min(max(1, int(pair_count * fraction)), int(max_edges), pair_count)
+        keep = min(max(1, int(pair_count * pair_fraction)), int(max_pairs), pair_count)
         candidate_d = points.new_empty((0,))
         candidate_a = torch.empty(0, dtype=torch.long, device=points.device)
         candidate_b = torch.empty(0, dtype=torch.long, device=points.device)

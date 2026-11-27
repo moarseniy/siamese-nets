@@ -103,6 +103,9 @@ P×K batch; in `global` mode it can be sampled from the full train split. The
 centers accumulate over training batches and clusters are rebuilt
 every `sampler.make_cluster_on_epoch` epochs. That published centroid snapshot
 is shared by Auto-clustering, APM radius measurements, and CATML's radius term.
+Cluster construction defaults to `cluster_pair_fraction=0.01`, capped at
+`cluster_max_pairs=50000` candidate pairs and `cluster_max_size=500` classes
+per cluster.
 APM updates its class probabilities each epoch using radii to the active
 snapshot. Before the first snapshot exists, APM uses its uniform fallback and
 CATML uses minibatch centers.

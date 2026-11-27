@@ -202,7 +202,9 @@ def main() -> None:
                     for section in fewshot_sections:
                         config[section]["k_shot"] = args.k_shot
                 if config["sampler"]["negative"] == "auto_clusters":
-                    config["sampler"].setdefault("cluster_fraction", 0.002)
+                    config["sampler"].setdefault("cluster_pair_fraction", 0.01)
+                    config["sampler"].setdefault("cluster_max_pairs", 50000)
+                    config["sampler"].setdefault("cluster_max_size", 500)
                     if args.batch_mode == "global":
                         config["sampler"].setdefault("make_cluster_on_epoch", 1)
                     else:

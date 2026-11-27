@@ -1458,7 +1458,7 @@ def run(
     except TypeError:
         optimizer = torch.optim.AdamW(optimizer_parameters, lr=float(train_cfg.get("learning_rate", 1e-4)), weight_decay=float(train_cfg.get("weight_decay", 0.01)))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(train_cfg.get("epochs", 10)))
-    class_clusters = ClassClusters(len(catalog.labels), max_cluster_size=int(sampler_config.get("cluster_max_size", 200)))
+    class_clusters = ClassClusters(len(catalog.labels), max_cluster_size=int(sampler_config.get("cluster_max_size", 500)))
     cluster_center_sum = torch.zeros((len(catalog.labels), model.output_dim), device=device)
     cluster_center_count = torch.zeros(len(catalog.labels), device=device)
     shared_centers = torch.zeros((len(catalog.labels), model.output_dim), device=device)
@@ -1516,7 +1516,7 @@ def run(
                 torch.cuda.set_rng_state_all(state["rng"]["cuda"])
         if apm is not None and state.get("apm"):
             apm.load_state_dict(state["apm"])
-        saved_clusters = state.get("class_clusters", state.get("class_graph"))
+        saved_clusters = state.get("class_clusters")
         if saved_clusters:
             class_clusters.load_state_dict(saved_clusters)
         if sampler is not None:
@@ -1668,7 +1668,7 @@ def run(
                 if sampler_config.get("negative") == "auto_clusters" and cluster_every > 0 and (step + 1) % cluster_every == 0:
                     active = torch.where(center_count > 0)[0]
                     centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
-                    class_clusters.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+                    class_clusters.update(centers, active, pair_fraction=float(sampler_config.get("cluster_pair_fraction", 0.01)), max_pairs=int(sampler_config.get("cluster_max_pairs", 50000)))
                     save_sampler_event(
                         "clusters",
                         class_clusters=class_clusters,
@@ -1679,7 +1679,7 @@ def run(
             if sampler_config.get("negative") == "auto_clusters" and center_count.any():
                 active = torch.where(center_count > 0)[0]
                 centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
-                class_clusters.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+                class_clusters.update(centers, active, pair_fraction=float(sampler_config.get("cluster_pair_fraction", 0.01)), max_pairs=int(sampler_config.get("cluster_max_pairs", 50000)))
                 save_sampler_event(
                     "clusters",
                     class_clusters=class_clusters,
@@ -1794,8 +1794,8 @@ def run(
                     class_clusters.update(
                         centers,
                         active,
-                        fraction=float(sampler_config.get("cluster_fraction", 0.002)),
-                        max_edges=int(sampler_config.get("cluster_max_edges", 10000)),
+                        pair_fraction=float(sampler_config.get("cluster_pair_fraction", 0.01)),
+                        max_pairs=int(sampler_config.get("cluster_max_pairs", 50000)),
                     )
                 shared_centers.zero_()
                 shared_centers.index_copy_(0, active, centers.index_select(0, active))
