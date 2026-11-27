@@ -54,7 +54,7 @@ def main() -> None:
     parser.add_argument("--batch-mode", choices=("pk", "global"), default="pk")
     parser.add_argument("--batch-size", type=int, help="Triplets per logical batch in global mode")
     parser.add_argument("--batch-count", type=int, help="Logical batches (optimizer updates) per epoch in global mode")
-    parser.add_argument("--minibatch-size", type=int, help="Triplets per GPU microbatch in global mode")
+    parser.add_argument("--minibatch-size", type=int, help="Triplets per GPU minibatch in global mode")
     parser.add_argument("--contrastive-margin", type=float, default=1.0)
     parser.add_argument("--proxy-margin", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, help="Override epoch count for a short pilot")

@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from experiment_sampling import ClassGraph, TripletIndexBatchSampler, generate_triplet_batch, mine_global_negatives
+from experiment_sampling import ClassClusters, TripletIndexBatchSampler, generate_triplet_batch, mine_global_negatives
 from experiment_losses import CATMLLoss
 from experiment_sampling import APMState
 
@@ -49,20 +49,20 @@ class GlobalMiningTests(unittest.TestCase):
 
     def test_triplet_batch_keeps_positive_class_and_cluster_negative(self):
         refs_by_class = [[0, 1], [2, 3], [4, 5]]
-        graph = ClassGraph(3, max_cluster_size=0)
-        graph.neighbors[10].add(20)
-        graph.neighbors[20].add(10)
+        clusters = ClassClusters(3, max_cluster_size=0)
+        clusters.members_by_class[10].add(20)
+        clusters.members_by_class[20].add(10)
         args = (
             64, refs_by_class, [0, 2, 4, 6], [{}, {}, {}], [0, 1, 2], [0, 1, 2],
-            [10, 20, 30], graph, None,
+            [10, 20, 30], clusters, None,
         )
         random_mode = generate_triplet_batch(
-            *args, negative_mode="random", directed_probability=1.0, margin=0.2,
+            *args, negative_mode="random", inner_imp_prob=1.0, margin=0.2,
             rng=random.Random(7), negative_rng=random.Random(8), np_rng=np.random.default_rng(9),
             device=torch.device("cpu"),
         )
         cluster_mode = generate_triplet_batch(
-            *args, negative_mode="auto_clusters", directed_probability=1.0, margin=0.2,
+            *args, negative_mode="auto_clusters", inner_imp_prob=1.0, margin=0.2,
             rng=random.Random(7), negative_rng=random.Random(8), np_rng=np.random.default_rng(9),
             device=torch.device("cpu"),
         )
@@ -76,7 +76,7 @@ class GlobalMiningTests(unittest.TestCase):
             if anchor_class in (0, 1):
                 self.assertEqual(negative_class, 1 - anchor_class)
 
-    def test_index_sampler_splits_logical_batches_into_microbatches(self):
+    def test_index_sampler_splits_logical_batches_into_minibatches(self):
         logical_batches = 0
 
         def generate():
@@ -86,12 +86,12 @@ class GlobalMiningTests(unittest.TestCase):
             return np.arange(start, start + 24, dtype=np.int64).reshape(8, 3)
 
         sampler = TripletIndexBatchSampler(batch_count=3, batch_size=8, minibatch_size=4, generate_batch=generate)
-        microbatches = list(sampler)
-        self.assertEqual(len(microbatches), 6)
-        self.assertTrue(all(len(microbatch) == 4 for microbatch in microbatches))
+        minibatches = list(sampler)
+        self.assertEqual(len(minibatches), 6)
+        self.assertTrue(all(len(minibatch) == 4 for minibatch in minibatches))
         self.assertEqual(logical_batches, 3)
-        self.assertEqual(microbatches[0][0], (0, 1, 2))
-        self.assertEqual(microbatches[2][0], (8, 9, 10))
+        self.assertEqual(minibatches[0][0], (0, 1, 2))
+        self.assertEqual(minibatches[2][0], (8, 9, 10))
 
     def test_index_sampler_works_as_dataloader_batch_sampler(self):
         class IndexDataset(Dataset):

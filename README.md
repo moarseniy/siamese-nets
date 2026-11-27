@@ -81,9 +81,9 @@ Sampler settings are explicit: `positive` is `random` or `apm`; `negative` is
 classic mode builds P×K candidate pools, chooses positives at random within
 each class, and applies the selected negative sampler inside the batch.
 `global` generates logical batches of triplet indices directly, then trains them in
-microbatches with gradient accumulation. Set `training.batch_size` (triplets per
+minibatches with gradient accumulation. Set `training.batch_size` (triplets per
 logical batch), `training.batch_count` (optimizer updates per epoch), and
-`training.minibatch_size` (triplets per GPU microbatch; it must divide
+`training.minibatch_size` (triplets per GPU minibatch; it must divide
 `batch_size`).
 
 `sampler.batch_mode="global"` selects this batch-generation mode;
@@ -96,22 +96,25 @@ calculate class radii. The bank is built when global hard/semi-hard mining is
 enabled or when APM can use a snapshot, using deterministic inference
 preprocessing. Optional `training.mining_batch_size` controls its GPU
 batch size and defaults to `evaluation.batch_size`. `auto_clusters` chooses
-from the global class graph without requiring the neighboring class to be in
-the same batch. Its centers accumulate over training batches and are rebuilt
+from the anchor's cluster with probability `inner_imp_prob`. A cluster is a
+group of training classes whose centroids the model considers close. In `pk`
+mode the neighboring class must also be in the current
+P×K batch; in `global` mode it can be sampled from the full train split. The
+centers accumulate over training batches and clusters are rebuilt
 every `sampler.make_cluster_on_epoch` epochs. That published centroid snapshot
 is shared by Auto-clustering, APM radius measurements, and CATML's radius term.
 APM updates its class probabilities each epoch using radii to the active
 snapshot. Before the first snapshot exists, APM uses its uniform fallback and
-CATML uses microbatch centers.
+CATML uses minibatch centers.
 
 Global hard mining has cost proportional to anchors × train examples. The
 feature bank is stored on the host; distance search streams it to the GPU in
 chunks. The `global` mode also keeps the sample-reference index on the host, while
-image/text payloads are loaded only for each GPU microbatch. CATML computes the
-radius of each microbatch sample against the shared snapshot centers; the
-centers are detached from that microbatch's backward pass.
+image/text payloads are loaded only for each GPU minibatch. CATML computes the
+radius of each minibatch sample against the shared snapshot centers; the
+centers are detached from that minibatch's backward pass.
 
-Every APM-probability or class-graph/centroid update is written as a separate
+Every APM-probability or cluster-group/centroid update is written as a separate
 class-keyed JSON file under `<run>/sampler_updates/`. After training, the runner
 writes `<run>/training_curves.png` as an overview, plus separate diagnostic
 plots for loss components, validation metrics, APM probability concentration,

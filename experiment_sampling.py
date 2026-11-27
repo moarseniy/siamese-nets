@@ -108,20 +108,20 @@ class APMState:
         self.previous = np.asarray(state["previous"], dtype=np.float64)
 
 
-class ClassGraph:
-    """Bounded connected components over nearest class-centroid pairs."""
+class ClassClusters:
+    """Groups of classes whose training centroids are considered close."""
 
     def __init__(self, class_count: int, max_cluster_size: int = 200):
         self.class_count = class_count
         self.max_cluster_size = int(max_cluster_size)
-        self.neighbors: dict[int, set[int]] = defaultdict(set)
+        self.members_by_class: dict[int, set[int]] = defaultdict(set)
         self.clusters: list[list[int]] = []
 
     @torch.no_grad()
     def update(self, centers: torch.Tensor, active_ids: torch.Tensor, fraction: float = 0.002, max_edges: int = 10000) -> None:
         ids = active_ids.detach().long().unique(sorted=True)
         if ids.numel() < 2:
-            self.neighbors.clear()
+            self.members_by_class.clear()
             self.clusters.clear()
             return
         points = centers[ids].detach().float()
@@ -176,23 +176,23 @@ class ClassGraph:
         for class_id in parent:
             components[find(class_id)].append(class_id)
         self.clusters = [sorted(group) for group in components.values() if len(group) > 1]
-        self.neighbors = defaultdict(set)
+        self.members_by_class = defaultdict(set)
         for cluster in self.clusters:
             for left in cluster:
-                self.neighbors[left].update(right for right in cluster if right != left)
+                self.members_by_class[left].update(right for right in cluster if right != left)
 
     def candidates(self, class_id: int, available: set[int]) -> list[int]:
-        return sorted(self.neighbors.get(int(class_id), set()) & available)
+        return sorted(self.members_by_class.get(int(class_id), set()) & available)
 
     def state_dict(self) -> dict:
         return {"clusters": self.clusters}
 
     def load_state_dict(self, state: dict) -> None:
         self.clusters = [list(map(int, cluster)) for cluster in state.get("clusters", [])]
-        self.neighbors = defaultdict(set)
+        self.members_by_class = defaultdict(set)
         for cluster in self.clusters:
             for left in cluster:
-                self.neighbors[left].update(right for right in cluster if right != left)
+                self.members_by_class[left].update(right for right in cluster if right != left)
 
 
 class PKBatchSampler:
@@ -365,10 +365,10 @@ def generate_triplet_batch(
     anchor_classes: list[int],
     negative_classes: list[int],
     global_class_ids: list[int],
-    class_graph: ClassGraph,
+    class_clusters: ClassClusters,
     anchor_probabilities: np.ndarray | None,
     negative_mode: str,
-    directed_probability: float,
+    inner_imp_prob: float,
     margin: float,
     rng: random.Random,
     negative_rng: random.Random,
@@ -433,12 +433,12 @@ def generate_triplet_batch(
     for row, class_index_value in enumerate(selected_anchor_classes):
         anchor_class = int(class_index_value)
         selected_negative_class = None
-        if negative_mode == "auto_clusters" and directed_probability > 0 and negative_rng.random() < directed_probability:
-            neighbors = class_graph.neighbors.get(int(global_class_ids[anchor_class]), set())
+        if negative_mode == "auto_clusters" and inner_imp_prob > 0 and negative_rng.random() < inner_imp_prob:
+            members = class_clusters.members_by_class.get(int(global_class_ids[anchor_class]), set())
             candidates = sorted(
-                global_to_train[int(neighbor)]
-                for neighbor in neighbors
-                if int(neighbor) in global_to_train and global_to_train[int(neighbor)] != anchor_class
+                global_to_train[int(member)]
+                for member in members
+                if int(member) in global_to_train and global_to_train[int(member)] != anchor_class
             )
             if candidates:
                 selected_negative_class = negative_rng.choice(candidates)
@@ -454,7 +454,7 @@ def generate_triplet_batch(
 
 
 class TripletIndexBatchSampler:
-    """Yield microbatches of triplet row IDs while retaining logical-batch boundaries."""
+    """Yield minibatches of triplet row IDs while retaining logical-batch boundaries."""
 
     def __init__(self, batch_count: int, batch_size: int, minibatch_size: int, generate_batch):
         self.batch_count = int(batch_count)
@@ -482,8 +482,8 @@ def make_triplets(
     *,
     mode: str = "random",
     margin: float = 0.2,
-    class_graph: ClassGraph | None = None,
-    directed_probability: float = 0.2,
+    class_clusters: ClassClusters | None = None,
+    inner_imp_prob: float = 0.2,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Build one positive/negative pair per anchor from a P x K batch.
 
@@ -520,27 +520,27 @@ def make_triplets(
             negative_idx = hard_idx
     else:
         negative_idx = torch.multinomial(negative_mask.float(), num_samples=1).squeeze(1)
-        if mode == "auto_clusters" and class_graph is not None and directed_probability > 0:
+        if mode == "auto_clusters" and class_clusters is not None and inner_imp_prob > 0:
             unique_labels, inverse = torch.unique(labels, sorted=True, return_inverse=True)
             unique_values = unique_labels.detach().cpu().tolist()
             index_by_label = {int(value): index for index, value in enumerate(unique_values)}
             pair_rows, pair_cols = [], []
             for class_id in unique_values:
                 left = index_by_label[int(class_id)]
-                for neighbor in class_graph.neighbors.get(int(class_id), ()):
-                    right = index_by_label.get(int(neighbor))
+                for member in class_clusters.members_by_class.get(int(class_id), ()):
+                    right = index_by_label.get(int(member))
                     if right is not None and right != left:
                         pair_rows.append(left)
                         pair_cols.append(right)
             if pair_rows:
-                neighbor_mask = torch.zeros((len(unique_values), len(unique_values)), device=device, dtype=torch.bool)
-                neighbor_mask[torch.tensor(pair_rows, device=device), torch.tensor(pair_cols, device=device)] = True
-                allowed = negative_mask & neighbor_mask[inverse][:, inverse]
+                cluster_member_mask = torch.zeros((len(unique_values), len(unique_values)), device=device, dtype=torch.bool)
+                cluster_member_mask[torch.tensor(pair_rows, device=device), torch.tensor(pair_cols, device=device)] = True
+                allowed = negative_mask & cluster_member_mask[inverse][:, inverse]
                 has_neighbor = allowed.any(dim=1)
                 rows = torch.where(has_neighbor)[0]
                 if rows.numel():
                     clustered_idx = torch.multinomial(allowed[rows].float(), num_samples=1).squeeze(1)
-                    choose_cluster = torch.rand(count, device=device) < directed_probability
+                    choose_cluster = torch.rand(count, device=device) < inner_imp_prob
                     use = rows[choose_cluster[rows]]
                     negative_idx[use] = clustered_idx[choose_cluster[rows]]
 

@@ -40,7 +40,7 @@ from experiment_losses import (
     triplet_hinge,
 )
 from experiment_metrics import embedding_classification_metrics, open_set_metrics, retrieval_metrics
-from experiment_sampling import APMState, ClassGraph, PKBatchSampler, TripletIndexBatchSampler, generate_triplet_batch, make_triplets
+from experiment_sampling import APMState, ClassClusters, PKBatchSampler, TripletIndexBatchSampler, generate_triplet_batch, make_triplets
 from experiment_models import build_encoder, configure_model_cache
 
 
@@ -70,7 +70,7 @@ class ReferenceDataset(Dataset):
 
 
 class TripletReferenceDataset(Dataset):
-    """Resolve generated global sample-row triples lazily for GPU microbatches."""
+    """Resolve generated global sample-row triples lazily for GPU minibatches."""
 
     def __init__(self, base: SampleDataset, refs_by_class, offsets: list[int]):
         self.base = base
@@ -106,7 +106,7 @@ class ClasswiseReferenceDataset(Dataset):
 
 
 def collate_triplets(batch: list[tuple[dict, dict, dict]]) -> dict:
-    """Flatten a microbatch of triplets into the usual sample batch format."""
+    """Flatten a minibatch of triplets into the usual sample batch format."""
     return collate_samples([sample for triplet in batch for sample in triplet])
 
 
@@ -238,11 +238,11 @@ def _write_sampler_update(
     catalog_labels: list[str],
     *,
     apm_probabilities: np.ndarray | None = None,
-    class_graph: ClassGraph | None = None,
+    class_clusters: ClassClusters | None = None,
     centers: torch.Tensor | None = None,
     center_observed: torch.Tensor | None = None,
 ) -> Path:
-    """Write a class-keyed JSON record for one APM or centroid/graph update."""
+    """Write a class-keyed JSON record for one APM or centroid/cluster update."""
     payload = {"epoch": int(epoch) + 1, "update": int(update_index), "event": event}
     global_to_label = {index: label for index, label in enumerate(catalog_labels)}
     global_ids = {label: index for index, label in enumerate(catalog_labels)}
@@ -259,10 +259,10 @@ def _write_sampler_update(
             if observed[global_ids[label]]
         }
 
-    if class_graph is not None:
+    if class_clusters is not None:
         train_global_ids = {global_ids[label] for label in train_classes}
         cluster_by_class = {}
-        for group in class_graph.clusters:
+        for group in class_clusters.clusters:
             members = [
                 global_to_label[class_id]
                 for class_id in sorted(group)
@@ -605,11 +605,11 @@ def _save_training_diagnostics(metrics_path: Path, output_dir: Path, primary_met
         if path is not None:
             outputs.append(path)
 
-    graph_events = [event for event in events if event.get("event") == "class_graph" and isinstance(event.get("clusters"), dict)]
-    if graph_events:
-        graph_x = [event_x(event) for event in graph_events]
+    cluster_events = [event for event in events if event.get("event") == "clusters" and isinstance(event.get("clusters"), dict)]
+    if cluster_events:
+        cluster_x = [event_x(event) for event in cluster_events]
         cluster_counts, clustered_class_counts, largest_clusters = [], [], []
-        for event in graph_events:
+        for event in cluster_events:
             unique_groups = {
                 tuple(sorted(members))
                 for members in event["clusters"].values()
@@ -620,8 +620,8 @@ def _save_training_diagnostics(metrics_path: Path, output_dir: Path, primary_met
             clustered_class_counts.append(float(sum(sizes)))
             largest_clusters.append(float(max(sizes, default=0)))
         path = _save_simple_line_plot(
-            output_dir / "cluster_structure.png", "Auto-clustering graph", "Epoch", "Classes / clusters",
-            graph_x,
+            output_dir / "cluster_structure.png", "Auto-clustering groups", "Epoch", "Classes / clusters",
+            cluster_x,
             [("clusters", cluster_counts), ("classes in clusters", clustered_class_counts), ("largest cluster", largest_clusters)],
         )
         if path is not None:
@@ -1158,6 +1158,8 @@ def _load_config(path: Path) -> dict:
         allowed_negative.add("global_hard")
     if negative_mode not in allowed_negative:
         raise ValueError(f"sampler.negative must be one of {sorted(allowed_negative)} for batch_mode={batch_mode!r}")
+    if negative_mode == "auto_clusters" and not 0.0 <= float(config["sampler"].get("inner_imp_prob", 0.2)) <= 1.0:
+        raise ValueError("sampler.inner_imp_prob must be in [0, 1]")
 
     loss_type = config.get("loss", {}).get("type")
     supported_losses = {
@@ -1181,8 +1183,6 @@ def _load_config(path: Path) -> dict:
             raise ValueError("training.batch_size must be divisible by training.minibatch_size")
         if negative_mode == "batch_hard":
             raise ValueError("batch_hard requires P×K candidates; use global_hard or semi_hard in global mode")
-        if not 0.0 <= float(config["sampler"].get("directed_probability", 0.2)) <= 1.0:
-            raise ValueError("sampler.directed_probability must be in [0, 1]")
         if int(config["sampler"].get("make_cluster_on_epoch", 1)) <= 0:
             raise ValueError("sampler.make_cluster_on_epoch must be positive")
     return config
@@ -1458,7 +1458,7 @@ def run(
     except TypeError:
         optimizer = torch.optim.AdamW(optimizer_parameters, lr=float(train_cfg.get("learning_rate", 1e-4)), weight_decay=float(train_cfg.get("weight_decay", 0.01)))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(train_cfg.get("epochs", 10)))
-    class_graph = ClassGraph(len(catalog.labels), max_cluster_size=int(sampler_config.get("cluster_max_size", 200)))
+    class_clusters = ClassClusters(len(catalog.labels), max_cluster_size=int(sampler_config.get("cluster_max_size", 200)))
     cluster_center_sum = torch.zeros((len(catalog.labels), model.output_dim), device=device)
     cluster_center_count = torch.zeros(len(catalog.labels), device=device)
     shared_centers = torch.zeros((len(catalog.labels), model.output_dim), device=device)
@@ -1516,8 +1516,9 @@ def run(
                 torch.cuda.set_rng_state_all(state["rng"]["cuda"])
         if apm is not None and state.get("apm"):
             apm.load_state_dict(state["apm"])
-        if state.get("class_graph"):
-            class_graph.load_state_dict(state["class_graph"])
+        saved_clusters = state.get("class_clusters", state.get("class_graph"))
+        if saved_clusters:
+            class_clusters.load_state_dict(saved_clusters)
         if sampler is not None:
             sampler.epoch = int(state.get("sampler_epoch", state["epoch"] + 1))
         cluster_accumulator = state.get("cluster_accumulator")
@@ -1636,8 +1637,8 @@ def run(
                             labels,
                             mode=sampler_config.get("negative", "random"),
                             margin=float(config.get("loss", {}).get("margin", 0.2)),
-                            class_graph=class_graph,
-                            directed_probability=float(sampler_config.get("directed_probability", 0.2)),
+                            class_clusters=class_clusters,
+                            inner_imp_prob=float(sampler_config.get("inner_imp_prob", 0.2)),
                         )
                         if loss_name == "proxy_anchor":
                             local_targets = torch.tensor([train_label_ids[name] for name in batch["class_name"]], device=device)
@@ -1667,10 +1668,10 @@ def run(
                 if sampler_config.get("negative") == "auto_clusters" and cluster_every > 0 and (step + 1) % cluster_every == 0:
                     active = torch.where(center_count > 0)[0]
                     centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
-                    class_graph.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+                    class_clusters.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
                     save_sampler_event(
-                        "class_graph",
-                        class_graph=class_graph,
+                        "clusters",
+                        class_clusters=class_clusters,
                         centers=centers,
                         center_observed=center_count > 0,
                     )
@@ -1678,10 +1679,10 @@ def run(
             if sampler_config.get("negative") == "auto_clusters" and center_count.any():
                 active = torch.where(center_count > 0)[0]
                 centers = center_sum / center_count.clamp_min(1).unsqueeze(1)
-                class_graph.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
+                class_clusters.update(centers, active, fraction=float(sampler_config.get("cluster_fraction", 0.002)), max_edges=int(sampler_config.get("cluster_max_edges", 10000)))
                 save_sampler_event(
-                    "class_graph",
-                    class_graph=class_graph,
+                    "clusters",
+                    class_clusters=class_clusters,
                     centers=centers,
                     center_observed=center_count > 0,
                 )
@@ -1702,10 +1703,10 @@ def run(
                     triplet_anchor_classes,
                     triplet_negative_classes,
                     global_class_ids,
-                    class_graph,
+                    class_clusters,
                     anchor_probabilities,
                     sampler_config.get("negative", "random"),
-                    float(sampler_config.get("directed_probability", 0.2)),
+                    float(sampler_config.get("inner_imp_prob", 0.2)),
                     float(config.get("loss", {}).get("margin", 0.2)),
                     triplet_rng,
                     triplet_negative_rng,
@@ -1732,13 +1733,13 @@ def run(
                 worker_init_fn=worker_init_fn,
                 generator=worker_generator,
             )
-            microbatches_per_logical = logical_batch_size // minibatch_size
+            minibatches_per_logical = logical_batch_size // minibatch_size
             logical_loss = 0.0
             logical_metrics: dict[str, float] = {}
             optimizer.zero_grad(set_to_none=True)
-            for microbatch_index, batch in enumerate(triplet_loader):
-                step = microbatch_index // microbatches_per_logical
-                in_logical_index = microbatch_index % microbatches_per_logical
+            for minibatch_index, batch in enumerate(triplet_loader):
+                step = minibatch_index // minibatches_per_logical
+                in_logical_index = minibatch_index % minibatches_per_logical
                 if in_logical_index == 0:
                     logical_loss = 0.0
                     logical_metrics = {}
@@ -1764,7 +1765,7 @@ def run(
                         )
 
                 if not torch.isfinite(loss):
-                    raise FloatingPointError(f"Non-finite loss at epoch={epoch}, step={step}, microbatch={microbatch_index}")
+                    raise FloatingPointError(f"Non-finite loss at epoch={epoch}, step={step}, minibatch={minibatch_index}")
                 weight = triplet_count / logical_batch_size
                 scaler.scale(loss * weight).backward()
                 logical_loss += float(loss.detach().float().item()) * weight
@@ -1777,7 +1778,7 @@ def run(
                     cluster_center_sum.index_add_(0, labels, embeddings.detach().float())
                     cluster_center_count.index_add_(0, labels, torch.ones_like(labels, dtype=torch.float32))
 
-                if in_logical_index + 1 == microbatches_per_logical:
+                if in_logical_index + 1 == minibatches_per_logical:
                     scaler.step(optimizer)
                     scaler.update()
                     epoch_loss += logical_loss
@@ -1790,7 +1791,7 @@ def run(
                 active = torch.where(cluster_center_count > 0)[0]
                 centers = cluster_center_sum / cluster_center_count.clamp_min(1).unsqueeze(1)
                 if sampler_config.get("negative") == "auto_clusters":
-                    class_graph.update(
+                    class_clusters.update(
                         centers,
                         active,
                         fraction=float(sampler_config.get("cluster_fraction", 0.002)),
@@ -1801,8 +1802,8 @@ def run(
                 shared_center_observed.zero_()
                 shared_center_observed[active] = True
                 save_sampler_event(
-                    "class_graph" if sampler_config.get("negative") == "auto_clusters" else "centroid_snapshot",
-                    class_graph=class_graph if sampler_config.get("negative") == "auto_clusters" else None,
+                    "clusters" if sampler_config.get("negative") == "auto_clusters" else "centroid_snapshot",
+                    class_clusters=class_clusters if sampler_config.get("negative") == "auto_clusters" else None,
                     centers=shared_centers,
                     center_observed=shared_center_observed,
                 )
@@ -1850,7 +1851,7 @@ def run(
             },
             "validation": validation,
             "apm": apm.state_dict() if apm is not None else None,
-            "class_graph": class_graph.state_dict(),
+            "class_clusters": class_clusters.state_dict(),
             "cluster_accumulator": {
                 "sum": cluster_center_sum.detach().cpu(),
                 "count": cluster_center_count.detach().cpu(),
